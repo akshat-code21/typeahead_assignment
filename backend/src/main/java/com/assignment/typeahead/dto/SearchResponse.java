@@ -5,9 +5,9 @@ import java.util.List;
 public class SearchResponse {
 
     private String prefix;
-    private List<Suggestion> suggestions;
+    private List<SuggestionResponse> suggestions;
 
-    public SearchResponse(String prefix, List<Suggestion> suggestions) {
+    public SearchResponse(String prefix, List<SuggestionResponse> suggestions) {
         this.prefix = prefix;
         this.suggestions = suggestions;
     }
@@ -20,11 +20,11 @@ public class SearchResponse {
         this.prefix = prefix;
     }
 
-    public List<Suggestion> getSuggestions() {
+    public List<SuggestionResponse> getSuggestions() {
         return suggestions;
     }
 
-    public void setSuggestions(List<Suggestion> suggestions) {
+    public void setSuggestions(List<SuggestionResponse> suggestions) {
         this.suggestions = suggestions;
     }
 }
