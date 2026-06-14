@@ -1,3 +1,31 @@
+server:
+  port: 8080
+
 spring:
   application:
     name: typeahead
+  datasource:
+    url: jdbc:postgresql://ep-restless-waterfall-aooqlh64-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?user=neondb_owner&password=npg_UzD4BKFnw5qR&sslmode=require&channelBinding=require
+    username: neondb_owner
+    password: npg_UzD4BKFnw5qR
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+typeahead:
+  cache:
+    node-count: 4
+    virtual-nodes: 150
+    ttl-seconds: 300
+  batch:
+    flush-interval-seconds: 10
+    flush-threshold: 100
+  trending:
+    window-minutes: 60
+    decay-factor: 0.95
+  dataset:
+    path: classpath:data/queries.csv
