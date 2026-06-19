@@ -38,3 +38,7 @@ typeahead:
     decay-factor: 0.95
   dataset:
     path: classpath:data/queries.csv
+
+app:
+  cors:
+    allowed-origins: ${ALLOWED_ORIGINS:http://localhost:5173}
