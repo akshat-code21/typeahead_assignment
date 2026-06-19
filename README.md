@@ -17,58 +17,46 @@ A full-stack search typeahead system with Redis caching, batch writes, and trend
 
 ## Quick Start
 
-### Prerequisites
-- Java 21+
-- Node.js 18+ / Bun
-- PostgreSQL database (or Neon account)
-- **Redis 7+** (`brew install redis` on macOS)
+### Option A: Run Backend + Redis via Docker Compose (Easiest)
 
-### 1. Start Redis
+If you have Docker installed, you can start the backend and a local Redis container with one command from the project root:
 
+```bash
+docker compose up --build
+```
+The backend will start at `http://localhost:8080` and connect to the local Redis container automatically.
+
+---
+
+### Option B: Run Services Individually (Local Dev)
+
+#### 1. Start Redis
+Ensure you have Redis installed (`brew install redis` on macOS) and run:
 ```bash
 redis-server
 # Runs on localhost:6379 by default
 ```
 
-### 2. Backend
-
+#### 2. Start Backend
 ```bash
 cd backend
-
-# Configure database in src/main/resources/application.yaml
-# Update spring.datasource.url, username, password if needed
-
-# Run
+# Database connects to Neon PostgreSQL by default (configured in src/main/resources/application.yaml)
 ./mvnw spring-boot:run
 # Backend starts at http://localhost:8080
 ```
 
-### 3. Frontend
+---
+
+### 3. Start Frontend (Runs on Host)
+
+Regardless of how you started the backend, run the React frontend from the `frontend/` directory:
 
 ```bash
 cd frontend
-
-# Install dependencies
-bun install
-
-# Run dev server
-bun dev
+bun install   # or npm install
+bun dev       # or npm run dev
 # Frontend starts at http://localhost:5173
 ```
-
-### Dataset Loading
-
-1. Download the AOL Query Logs from [Kaggle](https://www.kaggle.com/datasets/dineshydv/aol-user-session-collection-500k)
-2. Run the aggregation script to produce `queries.csv`:
-   ```bash
-   python main.py --input ./raw_data --output ./backend/src/main/resources/data/queries.csv
-   ```
-3. Import directly via psql (faster than JPA for 491K rows):
-   ```sql
-   ALTER TABLE search_queries ALTER COLUMN updated_at SET DEFAULT NOW();
-   \COPY search_queries(query, count) FROM 'backend/src/main/resources/data/queries.csv' WITH (FORMAT csv, HEADER true);
-   ```
-4. Restart backend — the DatasetLoader detects existing data and skips.
 
 ---
 
@@ -77,26 +65,26 @@ bun dev
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │                      Frontend (React + TS)                        │
-│  ┌──────────┐  ┌────────────────┐  ┌──────────┐  ┌────────────┐  │
-│  │SearchBar │  │TrendingSearches│  │StatsPanel│  │CacheDebug  │  │
-│  └────┬─────┘  └───────┬────────┘  └────┬─────┘  │   Panel    │  │
-│       │ debounce 300ms  │               │         └────────────┘  │
-│  ┌────┴────────────────┴───────────────┴────┐                     │
-│  │         Axios + TanStack Query            │                     │
+│  ┌──────────┐  ┌────────────────┐  ┌──────────┐  ┌────────────┐   │
+│  │SearchBar │  │TrendingSearches│  │StatsPanel│  │CacheDebug  │   │
+│  └────┬─────┘  └───────┬────────┘  └────┬─────┘  │   Panel    │   │
+│       │ debounce 300ms │                │        └────────────┘   │
+│  ┌────┴────────────────┴────────────────┴────┐                    │
+│  │         Axios + TanStack Query            │                    │
 │  └──────────────────┬────────────────────────┘                    │
-└─────────────────────┼────────────────────────────────────────────-┘
+└─────────────────────┼─────────────────────────────────────────────┘
                       │ HTTP
 ┌─────────────────────┼─────────────────────────────────────────────┐
-│                     │        Backend (Spring Boot)                 │
+│                     │        Backend (Spring Boot)                │
 │  ┌──────────────────┴──────────────────────┐                      │
-│  │            REST Controllers              │                      │
-│  │  /api/suggest  /api/search  /api/cache/* │                      │
+│  │            REST Controllers              │                     │
+│  │  /api/suggest  /api/search  /api/cache/* │                     │
 │  └──────┬──────────────┬──────────┬─────────┘                     │
-│         │              │          │                                │
-│  ┌──────▼──────┐ ┌─────▼────┐ ┌──▼─────────────┐                 │
+│         │              │          │                               │
+│  ┌──────▼──────┐ ┌─────▼────┐ ┌───▼─────────────┐                 │
 │  │ Suggestion  │ │  Search  │ │  CacheDebug     │                 │
 │  │  Service    │ │  Service │ │  Controller     │                 │
-│  └──────┬──────┘ └──┬───┬──-┘ └─────────────────┘                │
+│  └──────┬──────┘ └──┬───┬──-┘ └─────────────────┘                 │
 │         │           │   │                                         │
 │    ┌────▼────┐       │   │    ┌──────────────┐                    │
 │    │Distrib. │◄──────┘   ├───►│ BatchWrite   │                    │
@@ -105,7 +93,7 @@ bun dev
 │    └────┬────┘           │           │ @Scheduled flush           │
 │         │                │    ┌──────▼───────┐                    │
 │  ┌──────▼──────────┐     ├───►│  Trending    │                    │
-│  │   RedisTemplate  │    │    │  Service     │                    │
+│  │   RedisTemplate │     │    │  Service     │                    │
 │  │                 │     │    └──────────────┘                    │
 │  │  keys:          │     │                                        │
 │  │  typeahead:     │     │                                        │
@@ -119,11 +107,11 @@ bun dev
 │  └─────────────────┘     │                                        │
 │                          │                                        │
 │              ┌───────────▼──────────┐                             │
-│              │    PostgreSQL (Neon)  │                             │
-│              │   search_queries      │                             │
-│              │   (query, count, ts)  │                             │
+│              │    PostgreSQL (Neon) │                             │
+│              │   search_queries     │                             │
+│              │   (query, count, ts) │                             │
 │              └──────────────────────┘                             │
-└────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ### Data Flow
