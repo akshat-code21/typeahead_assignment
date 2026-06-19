@@ -46,7 +46,7 @@ public class DistributedCacheService {
                 return result;
             }
         } catch (Exception e) {
-            log.warn("Redis GET failed for key '{}': {}", key, e.getMessage());
+            log.warn("Redis GET failed for key '{}'", key, e);
         }
 
         missCount.incrementAndGet();
@@ -60,7 +60,7 @@ public class DistributedCacheService {
             redisTemplate.opsForValue().set(key, data, ttlSeconds, TimeUnit.SECONDS);
             log.debug("Cache PUT for prefix '{}' ({} suggestions, TTL={}s)", prefix, data.size(), ttlSeconds);
         } catch (Exception e) {
-            log.warn("Redis SET failed for key '{}': {}", key, e.getMessage());
+            log.warn("Redis SET failed for key '{}'", key, e);
         }
     }
 
@@ -70,7 +70,7 @@ public class DistributedCacheService {
             redisTemplate.delete(key);
             log.debug("Cache INVALIDATE for prefix '{}'", prefix);
         } catch (Exception e) {
-            log.warn("Redis DELETE failed for key '{}': {}", key, e.getMessage());
+            log.warn("Redis DELETE failed for key '{}'", key, e);
         }
     }
 
@@ -84,7 +84,7 @@ public class DistributedCacheService {
                 redisTemplate.delete(key);
                 count++;
             } catch (Exception e) {
-                log.warn("Redis DELETE failed for key '{}': {}", key, e.getMessage());
+                log.warn("Redis DELETE failed for key '{}'", key, e);
             }
         }
         log.info("Invalidated {} prefix keys for query '{}'", count, normalized);
@@ -101,7 +101,7 @@ public class DistributedCacheService {
                 ttl = redisTemplate.getExpire(key, TimeUnit.SECONDS);
             }
         } catch (Exception e) {
-            log.warn("Redis EXISTS/TTL check failed for key '{}': {}", key, e.getMessage());
+            log.warn("Redis EXISTS/TTL check failed for key '{}'", key, e);
         }
         String status = exists ? "HIT" : "MISS";
         return new CacheDebugResponse(prefix, "redis", status, key, ttl);
