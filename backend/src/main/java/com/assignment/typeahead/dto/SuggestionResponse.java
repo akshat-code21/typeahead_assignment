@@ -5,6 +5,9 @@ public class SuggestionResponse {
     private String query;
     private long score;
 
+    public SuggestionResponse() {
+    }
+
     public SuggestionResponse(String query, long score) {
         this.query = query;
         this.score = score;

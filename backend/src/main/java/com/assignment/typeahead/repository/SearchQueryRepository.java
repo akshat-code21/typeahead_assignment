@@ -6,4 +6,5 @@ import java.util.List;
 public interface SearchQueryRepository extends JpaRepository<SearchQuery, Long> {
     List<SearchQuery> findByQueryStartingWithIgnoreCase(String prefix);
     SearchQuery findByQuery(String query);
+    List<SearchQuery> findTop10ByOrderByCountDesc();
 }

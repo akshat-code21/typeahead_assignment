@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Search, Loader2, ArrowUp, ArrowDown, CornerDownLeft } from "lucide-react";
+import { Search, Loader2, ArrowUp, ArrowDown, CornerDownLeft, AlertCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { fetchSuggestions, submitSearch } from "@/api/typeaheadApi";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -8,9 +8,10 @@ import type { Suggestion } from "@/types";
 
 interface SearchBarProps {
   onSearchResult?: (message: string, query: string) => void;
+  onPrefixChange?: (prefix: string) => void;
 }
 
-export function SearchBar({ onSearchResult }: SearchBarProps) {
+export function SearchBar({ onSearchResult, onPrefixChange }: SearchBarProps) {
   const [inputValue, setInputValue] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [isOpen, setIsOpen] = useState(false);
@@ -19,7 +20,7 @@ export function SearchBar({ onSearchResult }: SearchBarProps) {
   const queryClient = useQueryClient();
   const debouncedValue = useDebounce(inputValue, 300);
 
-  const { data, isFetching } = useQuery({
+  const { data, isFetching, isError } = useQuery({
     queryKey: ["suggestions", debouncedValue],
     queryFn: () => fetchSuggestions(debouncedValue),
     enabled: debouncedValue.trim().length > 0,
@@ -98,7 +99,8 @@ export function SearchBar({ onSearchResult }: SearchBarProps) {
       setIsOpen(false);
     }
     setSelectedIndex(-1);
-  }, [debouncedValue, suggestions.length]);
+    onPrefixChange?.(debouncedValue.trim().toLowerCase());
+  }, [debouncedValue, suggestions.length, onPrefixChange]);
 
   useEffect(() => {
     if (selectedIndex >= 0 && listRef.current) {
@@ -129,6 +131,13 @@ export function SearchBar({ onSearchResult }: SearchBarProps) {
           <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
         )}
       </div>
+
+      {isError && debouncedValue.trim().length > 0 && (
+        <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg bg-destructive/10 text-destructive text-sm">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          Failed to fetch suggestions. Please try again.
+        </div>
+      )}
 
       {isOpen && suggestions.length > 0 && (
         <div className="absolute z-50 w-full mt-1 rounded-xl border border-border/50 bg-popover/95 backdrop-blur-md shadow-xl overflow-hidden">

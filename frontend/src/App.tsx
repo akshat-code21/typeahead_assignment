@@ -3,6 +3,7 @@ import { SearchBar } from "@/components/SearchBar";
 import { SearchResult } from "@/components/SearchResult";
 import { TrendingSearches } from "@/components/TrendingSearches";
 import { StatsPanel } from "@/components/StatsPanel";
+import { CacheDebugPanel } from "@/components/CacheDebugPanel";
 import { Search } from "lucide-react";
 
 export function App() {
@@ -10,6 +11,8 @@ export function App() {
     message: string;
     query: string;
   } | null>(null);
+
+  const [activePrefix, setActivePrefix] = useState("");
 
   return (
     <div className="min-h-svh bg-background">
@@ -27,11 +30,12 @@ export function App() {
       </div>
 
       {/* Search area */}
-      <div className="max-w-2xl mx-auto px-4 space-y-6">
+      <div className="max-w-2xl mx-auto px-4 space-y-4">
         <SearchBar
           onSearchResult={(message, query) =>
             setSearchResult({ message, query })
           }
+          onPrefixChange={setActivePrefix}
         />
 
         {searchResult && (
@@ -41,11 +45,14 @@ export function App() {
           />
         )}
 
+        {/* Live cache debug for current prefix */}
+        <CacheDebugPanel prefix={activePrefix} />
+
         <TrendingSearches />
       </div>
 
       {/* Stats */}
-      <div className="max-w-4xl mx-auto px-4 mt-16">
+      <div className="max-w-5xl mx-auto px-4 mt-16">
         <h2 className="text-sm font-medium text-muted-foreground mb-3">
           System Metrics
         </h2>

@@ -19,7 +19,12 @@ public class SearchQuery {
     private Long count=0L;
 
     @Column(name="updated_at",nullable = false)
-    private final LocalDateTime updatedAt = LocalDateTime.now();
+    private LocalDateTime updatedAt = LocalDateTime.now();
+
+    @PreUpdate
+    public void onUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
 
     public SearchQuery() {
     }

@@ -76,8 +76,7 @@ public class TrendingService {
                     .map(SuggestionResponse::getQuery)
                     .collect(Collectors.toSet());
 
-            List<SearchQuery> topAllTime = searchQueryRepository.findAll().stream()
-                    .sorted((a, b) -> Long.compare(b.getCount(), a.getCount()))
+            List<SearchQuery> topAllTime = searchQueryRepository.findTop10ByOrderByCountDesc().stream()
                     .filter(sq -> !alreadyIncluded.contains(sq.getQuery()))
                     .limit(MAX_TRENDING - trending.size())
                     .collect(Collectors.toList());

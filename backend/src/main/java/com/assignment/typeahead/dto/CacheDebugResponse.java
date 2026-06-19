@@ -6,12 +6,14 @@ public class CacheDebugResponse {
     private String node;
     private String status;
     private String cacheKey;
+    private Long ttlSeconds;
 
-    public CacheDebugResponse(String prefix, String node, String status, String cacheKey) {
+    public CacheDebugResponse(String prefix, String node, String status, String cacheKey, Long ttlSeconds) {
         this.prefix = prefix;
         this.node = node;
         this.status = status;
         this.cacheKey = cacheKey;
+        this.ttlSeconds = ttlSeconds;
     }
 
     public String getPrefix() {
@@ -44,5 +46,13 @@ public class CacheDebugResponse {
 
     public void setCacheKey(String cacheKey) {
         this.cacheKey = cacheKey;
+    }
+
+    public Long getTtlSeconds() {
+        return ttlSeconds;
+    }
+
+    public void setTtlSeconds(Long ttlSeconds) {
+        this.ttlSeconds = ttlSeconds;
     }
 }

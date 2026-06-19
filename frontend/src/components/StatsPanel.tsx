@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Database, Zap, HardDrive } from "lucide-react";
+import { Activity, Database, Zap, HardDrive, Clock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fetchCacheStats, fetchBatchStats } from "@/api/typeaheadApi";
 
@@ -15,6 +15,11 @@ export function StatsPanel() {
     queryFn: fetchBatchStats,
     refetchInterval: 5_000,
   });
+
+  const lastFlush =
+    batchStats?.lastFlushTime && batchStats.lastFlushTime !== "null"
+      ? new Date(batchStats.lastFlushTime).toLocaleTimeString()
+      : "Never";
 
   const stats = [
     {
@@ -41,10 +46,16 @@ export function StatsPanel() {
       icon: HardDrive,
       detail: "Pending flush",
     },
+    {
+      label: "Last Flush",
+      value: lastFlush,
+      icon: Clock,
+      detail: "Batch write timestamp",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
       {stats.map((stat) => (
         <Card
           key={stat.label}

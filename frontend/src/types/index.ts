@@ -23,6 +23,7 @@ export interface CacheDebugResponse {
   node: string;
   status: string;
   cacheKey: string;
+  ttlSeconds: number | null;
 }
 
 export interface BatchStatsResponse {

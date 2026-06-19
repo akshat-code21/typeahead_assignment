@@ -16,11 +16,16 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+
 typeahead:
   cache:
-    node-count: 4
-    virtual-nodes: 150
     ttl-seconds: 300
+    key-prefix: "typeahead:suggest:"
   batch:
     flush-interval-seconds: 10
     flush-threshold: 100
