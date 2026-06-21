@@ -41,6 +41,13 @@ export function CacheDebugPanel({ prefix }: CacheDebugPanelProps) {
       </div>
 
       <div className="flex items-center gap-1">
+        <span className="opacity-60">node:</span>
+        <code className="font-mono text-[11px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+          {data.node}
+        </code>
+      </div>
+
+      <div className="flex items-center gap-1">
         <span className="opacity-60">key:</span>
         <code className="font-mono text-[11px] bg-muted/60 px-1.5 py-0.5 rounded">
           {data.cacheKey}

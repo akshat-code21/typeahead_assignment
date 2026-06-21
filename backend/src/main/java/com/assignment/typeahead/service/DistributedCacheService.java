@@ -23,6 +23,9 @@ public class DistributedCacheService {
     @Autowired
     private RedisTemplate<String, Object> redisTemplate;
 
+    @Autowired
+    private ConsistentHashRing hashRing;
+
     @Value("${typeahead.cache.ttl-seconds:300}")
     private int ttlSeconds;
 
@@ -34,43 +37,46 @@ public class DistributedCacheService {
     private final AtomicLong missCount = new AtomicLong(0);
 
     public List<SuggestionResponse> get(String prefix) {
-        String key = buildKey(normalize(prefix));
+        String baseKey = buildBaseKey(normalize(prefix));
+        String routedKey = hashRing.routedKey(baseKey);
         try {
-            Object cached = redisTemplate.opsForValue().get(key);
+            Object cached = redisTemplate.opsForValue().get(routedKey);
             if (cached != null) {
                 hitCount.incrementAndGet();
-                log.debug("Cache HIT for prefix '{}'", prefix);
-                // Redis returns a LinkedHashMap list; convert back to SuggestionResponse list
+                log.debug("Cache HIT for prefix '{}' on node '{}'", prefix, hashRing.getNode(baseKey));
                 List<SuggestionResponse> result = objectMapper.convertValue(
                         cached, new TypeReference<List<SuggestionResponse>>() {});
                 return result;
             }
         } catch (Exception e) {
-            log.warn("Redis GET failed for key '{}'", key, e);
+            log.warn("Redis GET failed for key '{}'", routedKey, e);
         }
 
         missCount.incrementAndGet();
-        log.debug("Cache MISS for prefix '{}'", prefix);
+        log.debug("Cache MISS for prefix '{}' on node '{}'", prefix, hashRing.getNode(baseKey));
         return null;
     }
 
     public void put(String prefix, List<SuggestionResponse> data) {
-        String key = buildKey(normalize(prefix));
+        String baseKey = buildBaseKey(normalize(prefix));
+        String routedKey = hashRing.routedKey(baseKey);
         try {
-            redisTemplate.opsForValue().set(key, data, ttlSeconds, TimeUnit.SECONDS);
-            log.debug("Cache PUT for prefix '{}' ({} suggestions, TTL={}s)", prefix, data.size(), ttlSeconds);
+            redisTemplate.opsForValue().set(routedKey, data, ttlSeconds, TimeUnit.SECONDS);
+            log.debug("Cache PUT for prefix '{}' on node '{}' ({} suggestions, TTL={}s)",
+                    prefix, hashRing.getNode(baseKey), data.size(), ttlSeconds);
         } catch (Exception e) {
-            log.warn("Redis SET failed for key '{}'", key, e);
+            log.warn("Redis SET failed for key '{}'", routedKey, e);
         }
     }
 
     public void invalidate(String prefix) {
-        String key = buildKey(normalize(prefix));
+        String baseKey = buildBaseKey(normalize(prefix));
+        String routedKey = hashRing.routedKey(baseKey);
         try {
-            redisTemplate.delete(key);
-            log.debug("Cache INVALIDATE for prefix '{}'", prefix);
+            redisTemplate.delete(routedKey);
+            log.debug("Cache INVALIDATE for prefix '{}' on node '{}'", prefix, hashRing.getNode(baseKey));
         } catch (Exception e) {
-            log.warn("Redis DELETE failed for key '{}'", key, e);
+            log.warn("Redis DELETE failed for key '{}'", routedKey, e);
         }
     }
 
@@ -79,12 +85,13 @@ public class DistributedCacheService {
         int count = 0;
         for (int i = 1; i <= normalized.length(); i++) {
             String prefix = normalized.substring(0, i);
-            String key = buildKey(prefix);
+            String baseKey = buildBaseKey(prefix);
+            String routedKey = hashRing.routedKey(baseKey);
             try {
-                redisTemplate.delete(key);
+                redisTemplate.delete(routedKey);
                 count++;
             } catch (Exception e) {
-                log.warn("Redis DELETE failed for key '{}'", key, e);
+                log.warn("Redis DELETE failed for key '{}'", routedKey, e);
             }
         }
         log.info("Invalidated {} prefix keys for query '{}'", count, normalized);
@@ -92,19 +99,21 @@ public class DistributedCacheService {
 
     public CacheDebugResponse getRoutingInfo(String prefix) {
         String normalized = normalize(prefix);
-        String key = buildKey(normalized);
+        String baseKey = buildBaseKey(normalized);
+        String node = hashRing.getNode(baseKey);
+        String routedKey = hashRing.routedKey(baseKey);
         boolean exists = false;
         Long ttl = null;
         try {
-            exists = Boolean.TRUE.equals(redisTemplate.hasKey(key));
+            exists = Boolean.TRUE.equals(redisTemplate.hasKey(routedKey));
             if (exists) {
-                ttl = redisTemplate.getExpire(key, TimeUnit.SECONDS);
+                ttl = redisTemplate.getExpire(routedKey, TimeUnit.SECONDS);
             }
         } catch (Exception e) {
-            log.warn("Redis EXISTS/TTL check failed for key '{}'", key, e);
+            log.warn("Redis EXISTS/TTL check failed for key '{}'", routedKey, e);
         }
         String status = exists ? "HIT" : "MISS";
-        return new CacheDebugResponse(prefix, "redis", status, key, ttl);
+        return new CacheDebugResponse(prefix, node, status, routedKey, ttl);
     }
 
     public long getHitCount() {
@@ -128,7 +137,8 @@ public class DistributedCacheService {
         return prefix.trim().toLowerCase();
     }
 
-    private String buildKey(String normalizedPrefix) {
+    private String buildBaseKey(String normalizedPrefix) {
         return keyPrefix + normalizedPrefix;
     }
 }
+

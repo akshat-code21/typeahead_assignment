@@ -2,6 +2,7 @@ package com.assignment.typeahead.controller;
 
 import com.assignment.typeahead.dto.CacheDebugResponse;
 import com.assignment.typeahead.service.BatchWriteService;
+import com.assignment.typeahead.service.ConsistentHashRing;
 import com.assignment.typeahead.service.DistributedCacheService;
 import com.assignment.typeahead.service.PerformanceMetricsService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,6 +26,9 @@ public class CacheDebugController {
 
     @Autowired
     private PerformanceMetricsService perfMetrics;
+
+    @Autowired
+    private ConsistentHashRing hashRing;
 
     @GetMapping("/cache/debug")
     public ResponseEntity<CacheDebugResponse> cacheDebug(@RequestParam("prefix") String prefix) {
@@ -59,6 +63,11 @@ public class CacheDebugController {
     @GetMapping("/perf/stats")
     public ResponseEntity<Map<String, Object>> perfStats() {
         return ResponseEntity.ok(perfMetrics.getSnapshot());
+    }
+
+    @GetMapping("/ring/info")
+    public ResponseEntity<Map<String, Object>> ringInfo() {
+        return ResponseEntity.ok(hashRing.getRingInfo());
     }
 }
 
