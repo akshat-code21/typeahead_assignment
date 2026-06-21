@@ -6,6 +6,7 @@ import type {
   CacheDebugResponse,
   BatchStatsResponse,
   CacheStatsResponse,
+  PerfStatsResponse,
 } from "@/types";
 
 const api = axios.create({
@@ -50,3 +51,9 @@ export async function fetchCacheStats(): Promise<CacheStatsResponse> {
   const { data } = await api.get<CacheStatsResponse>("/cache/stats");
   return data;
 }
+
+export async function fetchPerfStats(): Promise<PerfStatsResponse> {
+  const { data } = await api.get<PerfStatsResponse>("/perf/stats");
+  return data;
+}
+

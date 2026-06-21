@@ -24,6 +24,9 @@ public class SuggestionService {
     @Autowired
     private DistributedCacheService cacheService;
 
+    @Autowired
+    private PerformanceMetricsService perfMetrics;
+
     public List<SuggestionResponse> getSuggestions(String prefix) {
         if (prefix == null || prefix.trim().isEmpty()) {
             return Collections.emptyList();
@@ -35,6 +38,9 @@ public class SuggestionService {
         if (cached != null) {
             return cached;
         }
+
+        // Cache MISS → querying DB (counts as a database read)
+        perfMetrics.incrementDbReads();
 
         List<SearchQuery> results = searchQueryRepository
                 .findByQueryStartingWithIgnoreCase(normalized);

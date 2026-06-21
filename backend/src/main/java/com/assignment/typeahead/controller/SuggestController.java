@@ -1,6 +1,7 @@
 package com.assignment.typeahead.controller;
 
 import com.assignment.typeahead.dto.SuggestionResponse;
+import com.assignment.typeahead.service.PerformanceMetricsService;
 import com.assignment.typeahead.service.SuggestionService;
 import com.assignment.typeahead.service.TrendingService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,11 +24,16 @@ public class SuggestController {
     @Autowired
     private TrendingService trendingService;
 
+    @Autowired
+    private PerformanceMetricsService perfMetrics;
+
     @GetMapping("/suggest")
     public ResponseEntity<Map<String, Object>> suggest(@RequestParam("q") String prefix) {
         long start = System.currentTimeMillis();
         List<SuggestionResponse> suggestions = suggestionService.getSuggestions(prefix);
         long latencyMs = System.currentTimeMillis() - start;
+
+        perfMetrics.recordLatency(latencyMs);
 
         return ResponseEntity.ok(Map.of(
                 "prefix", prefix,
@@ -42,3 +48,4 @@ public class SuggestController {
         return ResponseEntity.ok(Map.of("trending", trending));
     }
 }
+

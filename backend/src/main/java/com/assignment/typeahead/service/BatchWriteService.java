@@ -10,11 +10,17 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Buffers search-count updates and flushes them in batch to reduce DB write pressure.
+ * Also records DB write counts via {@link PerformanceMetricsService}.
+ */
 
 @Service
 public class BatchWriteService {
@@ -24,6 +30,9 @@ public class BatchWriteService {
     @Autowired
     private SearchQueryRepository searchQueryRepository;
 
+    @Autowired
+    private PerformanceMetricsService perfMetrics;
+
     @Value("${typeahead.batch.flush-threshold:100}")
     private int flushThreshold;
 
@@ -31,7 +40,8 @@ public class BatchWriteService {
 
     private final AtomicLong totalFlushed = new AtomicLong(0);
     private final AtomicLong totalIndividualWrites = new AtomicLong(0);
-    private volatile LocalDateTime lastFlushTime = null;
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+    private volatile ZonedDateTime lastFlushTime = null;
 
     public void buffer(String query) {
         buffer.computeIfAbsent(query, k -> new AtomicLong(0)).incrementAndGet();
@@ -85,7 +95,8 @@ public class BatchWriteService {
         }
 
         totalFlushed.addAndGet(flushedCount);
-        lastFlushTime = LocalDateTime.now();
+        perfMetrics.incrementDbWrites(flushedCount);
+        lastFlushTime = ZonedDateTime.now(IST);
         log.info("Flushed {} entries. Total individual writes reduced: {} → {}",
                 flushedCount, totalIndividualWrites.get(), totalFlushed.get());
     }
@@ -107,7 +118,7 @@ public class BatchWriteService {
         return totalIndividualWrites.get() - totalFlushed.get();
     }
 
-    public LocalDateTime getLastFlushTime() {
+    public ZonedDateTime getLastFlushTime() {
         return lastFlushTime;
     }
 }

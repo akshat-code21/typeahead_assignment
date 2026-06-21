@@ -3,6 +3,7 @@ package com.assignment.typeahead.controller;
 import com.assignment.typeahead.dto.CacheDebugResponse;
 import com.assignment.typeahead.service.BatchWriteService;
 import com.assignment.typeahead.service.DistributedCacheService;
+import com.assignment.typeahead.service.PerformanceMetricsService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,6 +22,9 @@ public class CacheDebugController {
 
     @Autowired
     private BatchWriteService batchWriteService;
+
+    @Autowired
+    private PerformanceMetricsService perfMetrics;
 
     @GetMapping("/cache/debug")
     public ResponseEntity<CacheDebugResponse> cacheDebug(@RequestParam("prefix") String prefix) {
@@ -51,4 +55,10 @@ public class CacheDebugController {
                 "hitRate", String.format("%.2f%%", cacheService.getHitRate() * 100)
         ));
     }
+
+    @GetMapping("/perf/stats")
+    public ResponseEntity<Map<String, Object>> perfStats() {
+        return ResponseEntity.ok(perfMetrics.getSnapshot());
+    }
 }
+

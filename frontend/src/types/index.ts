@@ -42,3 +42,17 @@ export interface CacheStatsResponse {
   totalRequests: number;
   hitRate: string;
 }
+
+export interface LatencyPercentiles {
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+export interface PerfStatsResponse {
+  latencyPercentiles: LatencyPercentiles;
+  sampleCount: number;
+  dbReadCount: number;
+  dbWriteCount: number;
+}
+

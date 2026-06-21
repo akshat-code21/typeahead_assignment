@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Database, Zap, HardDrive, Clock } from "lucide-react";
+import { Activity, Database, Zap, HardDrive, Clock, Gauge, BookOpen, PenTool } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { fetchCacheStats, fetchBatchStats } from "@/api/typeaheadApi";
+import { fetchCacheStats, fetchBatchStats, fetchPerfStats } from "@/api/typeaheadApi";
 
 export function StatsPanel() {
   const { data: cacheStats } = useQuery({
@@ -16,10 +16,19 @@ export function StatsPanel() {
     refetchInterval: 5_000,
   });
 
+  const { data: perfStats } = useQuery({
+    queryKey: ["perfStats"],
+    queryFn: fetchPerfStats,
+    refetchInterval: 5_000,
+  });
+
   const lastFlush =
     batchStats?.lastFlushTime && batchStats.lastFlushTime !== "null"
-      ? new Date(batchStats.lastFlushTime).toLocaleTimeString()
+      ? new Date(batchStats.lastFlushTime.replace(/\[.*]$/, "")).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata" })
       : "Never";
+
+  const fmtLatency = (v: number | undefined) =>
+    v !== undefined && v >= 0 ? `${v} ms` : "—";
 
   const stats = [
     {
@@ -33,6 +42,24 @@ export function StatsPanel() {
       value: cacheStats?.missCount?.toLocaleString() ?? "—",
       icon: Activity,
       detail: "DB fallback queries",
+    },
+    {
+      label: "P95 Latency",
+      value: fmtLatency(perfStats?.latencyPercentiles?.p95),
+      icon: Gauge,
+      detail: `p50 ${fmtLatency(perfStats?.latencyPercentiles?.p50)} · p99 ${fmtLatency(perfStats?.latencyPercentiles?.p99)}`,
+    },
+    {
+      label: "DB Reads",
+      value: perfStats?.dbReadCount?.toLocaleString() ?? "—",
+      icon: BookOpen,
+      detail: "Cache-miss DB queries",
+    },
+    {
+      label: "DB Writes",
+      value: perfStats?.dbWriteCount?.toLocaleString() ?? "—",
+      icon: PenTool,
+      detail: "Batched flush writes",
     },
     {
       label: "Writes Reduced",
@@ -55,7 +82,7 @@ export function StatsPanel() {
   ];
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {stats.map((stat) => (
         <Card
           key={stat.label}
@@ -80,3 +107,4 @@ export function StatsPanel() {
     </div>
   );
 }
+
