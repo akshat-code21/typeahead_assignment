@@ -87,6 +87,7 @@ bun dev       # or npm run dev
 │  ┌──────────────────┴───────────────────────┐                     │
 │  │            REST Controllers              │                     │
 │  │  /api/suggest  /api/search  /api/cache/* │                     │
+│  │  /api/perf/*   /api/ring/*               │                     │
 │  └──────┬──────────────┬──────────┬─────────┘                     │
 │         │              │          │                               │
 │  ┌──────▼──────┐ ┌─────▼────┐ ┌───▼─────────────┐                 │
@@ -101,9 +102,16 @@ bun dev       # or npm run dev
 │    └────┬────┘           │           │ @Scheduled flush           │
 │         │                │    ┌──────▼───────┐                    │
 │  ┌──────▼──────────┐     ├───►│  Trending    │                    │
-│  │   RedisTemplate │     │    │  Service     │                    │
-│  │                 │     │    └──────────────┘                    │
+│  │ ConsistentHash  │     │    │  Service     │                    │
+│  │   Ring          │     │    └──────────────┘                    │
+│  │  3 nodes ×      │     │                                        │
+│  │  150 virtual    │     │    ┌──────────────┐                    │
+│  └──────┬──────────┘     │    │ Performance  │                    │
+│         │ route key      │    │ Metrics Svc  │                    │
+│  ┌──────▼──────────┐     │    │ (p95, DB I/O)│                    │
+│  │   RedisTemplate │     │    └──────────────┘                    │
 │  │  keys:          │     │                                        │
+│  │  cache-node-X:  │     │                                        │
 │  │  typeahead:     │     │                                        │
 │  │  suggest:<pfx>  │     │                                        │
 │  └─────────────────┘     │                                        │
@@ -129,11 +137,13 @@ bun dev       # or npm run dev
 SearchBar → debounce 300ms → GET /api/suggest
   → SuggestionService
     → DistributedCacheService.get(prefix)
-      → RedisTemplate.opsForValue().get("typeahead:suggest:<prefix>")
+      → ConsistentHashRing.getNode(baseKey)  → determines owning node
+      → RedisTemplate.opsForValue().get("cache-node-X:typeahead:suggest:<prefix>")
         ├─ HIT:  return cached List<SuggestionResponse>
-        └─ MISS: DB query → sort by count → limit 10
+        └─ MISS: DB query (dbReadCount++) → sort by count → limit 10
                  → cache.put(prefix, results, TTL=300s)
                  → return results
+  → PerformanceMetricsService.recordLatency(latencyMs)
 ```
 
 **Search Submission:**
@@ -149,6 +159,7 @@ SearchBar → POST /api/search
 ```
 @Scheduled(every 10s) → BatchWriteService.flush()
   → snapshot ConcurrentHashMap → upsert to PostgreSQL (1 write per unique query)
+  → PerformanceMetricsService.incrementDbWrites(flushedCount)
 ```
 
 ---
@@ -163,14 +174,24 @@ SearchBar → POST /api/search
 | GET | `/api/cache/debug?prefix=<prefix>` | Cache debug info | Query param `prefix` | `{ prefix, node, status, cacheKey, ttlSeconds }` |
 | GET | `/api/cache/stats` | Cache hit/miss metrics | — | `{ hitCount, missCount, totalRequests, hitRate }` |
 | GET | `/api/batch/stats` | Batch write metrics | — | `{ bufferSize, totalFlushed, totalWritesReduced, ... }` |
+| GET | `/api/perf/stats` | P95 latency & DB I/O | — | `{ latencyPercentiles: {p50, p95, p99}, dbReadCount, dbWriteCount }` |
+| GET | `/api/ring/info` | Hash ring config | — | `{ totalNodes, virtualNodesPerNode, totalRingPositions, nodeNames }` |
 
 ---
 
 ## Design Choices and Trade-offs
 
-### 1. Redis as Distributed Cache
+### 1. Redis as Distributed Cache with Consistent Hashing
 
-**Design:** `DistributedCacheService` uses Spring Data Redis (`RedisTemplate`) with String key serialization and JSON value serialization. Cache keys follow the pattern `typeahead:suggest:<normalized-prefix>` with a configurable TTL (default 300s).
+**Design:** `DistributedCacheService` uses Spring Data Redis (`RedisTemplate`) with String key serialization and JSON value serialization. A `ConsistentHashRing` routes each cache key to one of **3 logical cache nodes** using **150 virtual nodes** per physical node (450 total ring positions). Cache keys follow the pattern `cache-node-X:typeahead:suggest:<normalized-prefix>` with a configurable TTL (default 300s).
+
+**Consistent Hashing Implementation:**
+- `ConsistentHashRing` uses MD5 hashing to map both virtual-node labels and cache keys to positions on a 32-bit integer ring.
+- For a given prefix, the ring finds the closest node position clockwise from the key's hash.
+- Each logical node's keys are namespaced with the node name (e.g., `cache-node-0:`, `cache-node-1:`, `cache-node-2:`) to demonstrate distribution.
+- In production, each logical node would map to a separate Redis instance/shard. For this assignment, all nodes share a single Redis instance but use distinct key prefixes.
+- The `/api/cache/debug` endpoint shows exactly which node owns each prefix and the full routed key.
+- The `/api/ring/info` endpoint exposes the ring configuration.
 
 **Why Redis:**
 - **True distribution:** Redis is a network-separated process; the application can scale horizontally and share a single cache layer, unlike an in-process `ConcurrentHashMap`.
@@ -178,15 +199,14 @@ SearchBar → POST /api/search
 - **Atomic operations:** `GET`, `SET EX`, `DEL` are all atomic, making concurrent access safe.
 - **Production-ready:** Supports clustering (Redis Cluster), replication, and persistence (RDB/AOF).
 
-**Redis Cluster and Consistent Hashing:** In a Redis Cluster setup, Redis itself uses consistent hashing (hash slots) to distribute keys across shards — this is the production-grade approach. For this assignment, a single Redis node is used for simplicity while keeping the architecture extensible.
-
 **Trade-offs:**
-- Single Redis node is a potential single point of failure (mitigated in production with Redis Sentinel or Cluster).
+- Single Redis instance is a potential single point of failure (mitigated in production with Redis Sentinel or Cluster).
+- The consistent hash ring adds a negligible computation cost (~0.01ms per key) but enables transparent horizontal scaling.
 - Network hop to Redis adds ~1ms latency vs in-process cache, but this is dwarfed by the DB query savings.
 
 ### 2. Cache Invalidation Strategy
 
-**Design:** On search submission, ALL prefix keys derived from the query are invalidated (deleted from Redis). E.g., searching "iphone" deletes `typeahead:suggest:i`, `typeahead:suggest:ip`, ..., `typeahead:suggest:iphone`.
+**Design:** On search submission, ALL prefix keys derived from the query are invalidated (deleted from Redis). E.g., searching "iphone" deletes `cache-node-X:typeahead:suggest:i`, `cache-node-Y:typeahead:suggest:ip`, ..., `cache-node-Z:typeahead:suggest:iphone` (where each prefix is routed through the consistent hash ring to its owning node).
 
 **Why:** Ensures that newly popular queries are reflected in suggestions immediately after a search is submitted.
 
@@ -258,26 +278,58 @@ After running the app and performing ~50 searches:
 |--------|----------|----------|
 | Suggestion latency (cache HIT) | `GET /api/suggest` → `latencyMs` | 2–10 ms |
 | Suggestion latency (cache MISS) | `GET /api/suggest` → `latencyMs` | 50–600 ms |
+| P95 latency | `GET /api/perf/stats` → `latencyPercentiles.p95` | varies (from last 1000 samples) |
+| P50 latency | `GET /api/perf/stats` → `latencyPercentiles.p50` | varies |
 | Cache hit rate (after warmup) | `GET /api/cache/stats` → `hitRate` | 30–60% |
+| DB reads (cache misses) | `GET /api/perf/stats` → `dbReadCount` | increments per cache-miss query |
+| DB writes (batch flushes) | `GET /api/perf/stats` → `dbWriteCount` | increments per flush entry |
 | Write reduction | `GET /api/batch/stats` → `totalWritesReduced` | varies |
 
-### Cache Debug
+### Latency Percentile Tracking
+
+`PerformanceMetricsService` collects the last 1000 suggest-API latency samples in a thread-safe circular buffer. Percentiles (p50, p95, p99) are computed on demand by sorting the buffer. The `StatsPanel` in the frontend displays the P95 latency prominently, with p50 and p99 in the detail line.
+
+### Database Read/Write Counts
+
+- **DB Reads:** Incremented by `SuggestionService` each time a cache miss triggers a database query.
+- **DB Writes:** Incremented by `BatchWriteService` each time a batch flush writes entries to PostgreSQL.
+
+Both counters are tracked via `PerformanceMetricsService` and exposed through `GET /api/perf/stats`.
+
+### Cache Debug with Consistent Hashing
 
 ```bash
-# Check cache status for various prefixes
-for prefix in "a" "b" "go" "iph" "java" "react"; do
+# Check cache status and node routing for various prefixes
+for prefix in "a" "app" "google" "iphone" "java" "react"; do
   echo -n "$prefix → "
   curl -s "http://localhost:8080/api/cache/debug?prefix=$prefix" | \
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status'], '| key:', d['cacheKey'], '| TTL:', d.get('ttlSeconds', 'N/A'), 's')"
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d['node'], '|', d['status'], '| key:', d['cacheKey'], '| TTL:', d.get('ttlSeconds', 'N/A'), 's')"
 done
 ```
 
-Expected output after querying those prefixes at least once:
+Expected output (node assignment determined by consistent hash ring):
 ```
-a    → HIT  | key: typeahead:suggest:a    | TTL: 287 s
-b    → MISS | key: typeahead:suggest:b    | TTL: N/A
-go   → HIT  | key: typeahead:suggest:go   | TTL: 243 s
-iph  → MISS | key: typeahead:suggest:iph  | TTL: N/A
+a      → cache-node-1 | HIT  | key: cache-node-1:typeahead:suggest:a      | TTL: 287 s
+app    → cache-node-1 | HIT  | key: cache-node-1:typeahead:suggest:app    | TTL: 243 s
+google → cache-node-0 | MISS | key: cache-node-0:typeahead:suggest:google | TTL: N/A
+iphone → cache-node-0 | HIT  | key: cache-node-0:typeahead:suggest:iphone | TTL: 180 s
+java   → cache-node-2 | MISS | key: cache-node-2:typeahead:suggest:java   | TTL: N/A
+react  → cache-node-2 | HIT  | key: cache-node-2:typeahead:suggest:react  | TTL: 120 s
+```
+
+### Hash Ring Info
+
+```bash
+curl -s http://localhost:8080/api/ring/info | python3 -m json.tool
+```
+
+```json
+{
+    "totalNodes": 3,
+    "virtualNodesPerNode": 150,
+    "totalRingPositions": 450,
+    "nodeNames": ["cache-node-0", "cache-node-1", "cache-node-2"]
+}
 ```
 
 ---
@@ -297,13 +349,15 @@ assignment/
 │       ├── service/
 │       │   ├── SuggestionService.java           # Cache-first → DB fallback → sort → limit 10
 │       │   ├── SearchService.java               # Buffer + invalidate + record trending
-│       │   ├── DistributedCacheService.java     # Redis get/put/invalidate + hit metrics
+│       │   ├── DistributedCacheService.java     # Redis get/put/invalidate via hash ring
+│       │   ├── ConsistentHashRing.java          # MD5 hash ring (3 nodes × 150 virtual)
+│       │   ├── PerformanceMetricsService.java   # P95 latency + DB read/write counters
 │       │   ├── BatchWriteService.java           # ConcurrentHashMap buffer + @Scheduled flush
 │       │   └── TrendingService.java             # Exponential decay + window eviction
 │       ├── controller/
 │       │   ├── SuggestController.java           # GET /api/suggest, GET /api/trending
 │       │   ├── SearchController.java            # POST /api/search
-│       │   └── CacheDebugController.java        # GET /api/cache/debug, /cache/stats, /batch/stats
+│       │   └── CacheDebugController.java        # GET /api/cache/debug, /stats, /perf, /ring
 │       ├── dto/
 │       │   ├── SuggestionResponse.java          # {query, score}
 │       │   ├── SearchRequest.java               # {query}
@@ -313,15 +367,15 @@ assignment/
 ├── frontend/
 │   └── src/
 │       ├── App.tsx                              # Main layout, lifts prefix state
-│       ├── api/typeaheadApi.ts                  # Axios API client
+│       ├── api/typeaheadApi.ts                  # Axios API client (+ fetchPerfStats)
 │       ├── hooks/useDebounce.ts                 # 300ms debounce hook
-│       ├── types/index.ts                       # TypeScript interfaces
+│       ├── types/index.ts                       # TypeScript interfaces (+ PerfStatsResponse)
 │       └── components/
 │           ├── SearchBar.tsx                    # Input + dropdown + keyboard nav
 │           ├── SearchResult.tsx                 # "Searched" confirmation banner
 │           ├── TrendingSearches.tsx             # Trending badges with auto-refresh
-│           ├── StatsPanel.tsx                   # Cache & batch metrics cards (5 cards)
-│           └── CacheDebugPanel.tsx              # Live HIT/MISS + cacheKey + TTL display
+│           ├── StatsPanel.tsx                   # 8-card metrics (P95, DB R/W, cache, batch)
+│           └── CacheDebugPanel.tsx              # Live HIT/MISS + node + cacheKey + TTL
 ├── TESTING.md                                   # Testing guide with curl commands
 └── README.md                                    # This file
 ```
@@ -337,12 +391,12 @@ assignment/
 > ![Search input with suggestion dropdown](screenshots/suggest_dropdown.png)
 
 > **Cache Debug Panel (live HIT/MISS) & Trending Searches:**
-> Below the search box, the CacheDebugPanel shows the Redis cache key, HIT/MISS status, and remaining TTL in seconds for the current prefix. The trending searches (recently + historically popular) are highlighted below it.
+> Below the search box, the CacheDebugPanel shows the Redis cache key, cache node, HIT/MISS status, and remaining TTL in seconds for the current prefix. The trending searches (recently + historically popular) are highlighted below it.
 >
 > ![Cache Debug Panel and Trending Searches](screenshots/cache_debug_trending.png)
 
 > **System Metrics & Search Confirmation:**
-> The StatsPanel shows cache hit rate, cache misses, writes reduced, buffer size, and last flush time — updated every 5 seconds. A confirmation banner also displays when a search is successfully submitted.
+> The StatsPanel shows 8 metric cards — cache hit rate, cache misses, P95 latency (with p50/p99), DB reads, DB writes, writes reduced, buffer size, and last flush time (IST) — updated every 5 seconds. A confirmation banner also displays when a search is successfully submitted.
 >
 > ![System Metrics and Search Confirmation](screenshots/system_metrics_panel.png)
 
