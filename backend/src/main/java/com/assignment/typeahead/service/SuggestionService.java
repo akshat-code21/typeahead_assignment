@@ -27,6 +27,9 @@ public class SuggestionService {
     @Autowired
     private PerformanceMetricsService perfMetrics;
 
+    @Autowired
+    private TrendingService trendingService;
+
     public List<SuggestionResponse> getSuggestions(String prefix) {
         if (prefix == null || prefix.trim().isEmpty()) {
             return Collections.emptyList();
@@ -46,9 +49,9 @@ public class SuggestionService {
                 .findByQueryStartingWithIgnoreCase(normalized);
 
         List<SuggestionResponse> suggestions = results.stream()
-                .sorted((a, b) -> Long.compare(b.getCount(), a.getCount()))
+                .map(sq -> new SuggestionResponse(sq.getQuery(), Math.round(trendingService.getScore(sq.getQuery(), sq.getCount()))))
+                .sorted((a, b) -> Long.compare(b.getScore(), a.getScore()))
                 .limit(MAX_SUGGESTIONS)
-                .map(sq -> new SuggestionResponse(sq.getQuery(), sq.getCount()))
                 .collect(Collectors.toList());
 
         cacheService.put(normalized, suggestions);

@@ -90,6 +90,20 @@ public class TrendingService {
         return trending;
     }
 
+    public double getScore(String query, long allTimeCount) {
+        evictOldEvents();
+        Instant now = Instant.now();
+        double recentWeight = 0.0;
+        for (SearchEvent event : recentEvents) {
+            if (event.query.equals(query)) {
+                double ageMinutes = (now.toEpochMilli() - event.timestamp.toEpochMilli()) / 60_000.0;
+                recentWeight += Math.pow(decayFactor, ageMinutes);
+            }
+        }
+        double boostMultiplier = 100.0;
+        return allTimeCount + (recentWeight * boostMultiplier);
+    }
+
     private void evictOldEvents() {
         Instant cutoff = Instant.now().minusSeconds(windowMinutes * 60L);
         while (!recentEvents.isEmpty() && recentEvents.peekFirst().timestamp.isBefore(cutoff)) {

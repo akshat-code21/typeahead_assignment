@@ -234,31 +234,38 @@ SearchBar → POST /api/search
 
 ### 5. Trending Searches (Recency-Aware Ranking)
 
-**Design:** `ConcurrentLinkedDeque<SearchEvent>` stores recent search events with timestamps. Scoring uses exponential decay:
+To incorporate recency, suggestions and trending lists are ranked using a combined score of historical popularity and recent search activity.
 
-```
-score = allTimeCount + (Σ decayFactor^ageMinutes) × boostMultiplier
-```
+#### Scoring Formula
+$$score = allTimeCount + \left(\sum decayFactor^{ageMinutes}\right) \times boostMultiplier$$
+*Default values: `decayFactor = 0.95`, `boostMultiplier = 100`, `windowMinutes = 60`.*
 
-Default values: `decayFactor = 0.95`, `boostMultiplier = 100`, `windowMinutes = 60`.
+---
 
-**How recent activity affects ranking:**
-- A search 1 minute ago contributes `0.95^1 = 0.95`
-- A search 30 minutes ago contributes `0.95^30 ≈ 0.21`
-- A search 60 minutes ago is evicted from the window
+#### 1. How recent searches are tracked
+* **In-Memory Deque:** Recent search events are recorded in a thread-safe `ConcurrentLinkedDeque<SearchEvent>` in `TrendingService`.
+* **Event Metadata:** Each `SearchEvent` stores the search query string and the `Instant` timestamp when the query was submitted.
 
-**How over-ranking is avoided:**
-- Events older than `windowMinutes` (60 min) are evicted from the deque
-- The decay factor ensures recent events have diminishing influence over time
-- Once eviction happens, the query's ranking falls back to its all-time count
+#### 2. How recent activity affects ranking
+* **Recency Boost:** When a query is searched, it enters the sliding window. Its score receives a `boostMultiplier` (100) multiplied by a decaying weight based on its age.
+  - A search **1 minute ago** adds: $0.95^{1} \times 100 = 95.0$ to the score.
+  - A search **30 minutes ago** adds: $0.95^{30} \times 100 \approx 21.46$ to the score.
+* **Re-ranking Suggestions & Trending:** Both `/api/suggest?q=...` and `/api/trending` retrieve the current raw count from the database and combine it with the decayed boost score to sort suggestions.
 
-**Cache and trending:**
-- Cache prefixes are invalidated on every search submission via `invalidateAllPrefixes()`
-- The trending endpoint is separate from the suggestion endpoint, so trending freshness doesn't depend on cache TTL
+#### 3. How the system avoids permanently over-ranking queries
+* **Sliding Window Eviction:** During every new search event or get request, events older than `windowMinutes` (60 minutes) are evicted from the deque using `evictOldEvents()`.
+* **Decay Function:** The exponential decay factor ($0.95^{age}$) ensures that the boost contribution of a spike in traffic diminishes rapidly minute-by-minute.
+* **Automatic Fallback:** Once a search event is evicted from the sliding window, its boost goes to `0`, and its ranking automatically falls back to its historical all-time DB count.
 
-**Trade-offs:**
-- In-memory storage means trending data is lost on restart (acceptable for assignment)
-- The decay factor (0.95) and window (60 min) are configurable via `application.yaml`
+#### 4. How the cache is updated/invalidated when rankings change
+* **Cache Invalidation:** When a search is submitted, `DistributedCacheService.invalidateAllPrefixes(query)` is triggered. It computes all prefixes of the query and invalidates their cache entries across the Redis cluster.
+* **Freshness Propagation:** The next request for `/api/suggest?q=<prefix>` experiences a cache miss, queries the database, applies the latest recency boost, and populates the Redis cache with the updated ranking.
+* **Separation of Concerns:** The `/api/trending` endpoint does not cache results because it reads directly from JVM memory and Neon DB metadata. This ensures that the trending widget displays real-time popularity shifts without waiting for suggestion TTLs to expire.
+
+#### 5. Trade-offs: Freshness vs. Latency vs. Complexity
+* **Freshness vs. Latency:** Cache invalidation on submission guarantees absolute freshness of the suggestions. However, it increases suggestion latency on the next keypress because of cache misses (50–600ms DB read vs. <10ms cache hit). 
+* **In-Memory Tracking vs. Persistence:** Storing recent search events in JVM memory (`ConcurrentLinkedDeque`) keeps write/read latency ultra-low (avoiding constant DB write/read operations for trending). The trade-off is volatility: trending state is lost when the backend server restarts.
+* **Implementation Complexity:** Using a simple in-memory sliding window and on-the-fly score calculation is significantly simpler than managing complex database/Redis streaming architectures, while fully satisfying the HLD requirements of a real-time typeahead system.
 
 ### 6. Database Choice (PostgreSQL)
 
