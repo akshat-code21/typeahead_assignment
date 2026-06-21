@@ -351,18 +351,16 @@ assignment/
 > **Search input with suggestion dropdown and keyboard navigation:**
 > Type any prefix (e.g. "goo") to see the dropdown appear with up to 10 sorted suggestions.
 > Use ↑↓ to navigate, Enter to select, Escape to dismiss.
+>
+> ![Search input with suggestion dropdown](screenshots/suggest_dropdown.png)
 
-> **Cache Debug Panel (live HIT/MISS):**
-> Below the search box, the CacheDebugPanel shows the Redis cache key, HIT/MISS status, and remaining TTL in seconds for the current prefix.
+> **Cache Debug Panel (live HIT/MISS) & Trending Searches:**
+> Below the search box, the CacheDebugPanel shows the Redis cache key, HIT/MISS status, and remaining TTL in seconds for the current prefix. The trending searches (recently + historically popular) are highlighted below it.
+>
+> ![Cache Debug Panel and Trending Searches](screenshots/cache_debug_trending.png)
 
-> **Trending searches section:**
-> The top 3 trending (recently + historically popular) are highlighted with a 🔥 icon.
+> **System Metrics & Search Confirmation:**
+> The StatsPanel shows cache hit rate, cache misses, writes reduced, buffer size, and last flush time — updated every 5 seconds. A confirmation banner also displays when a search is successfully submitted.
+>
+> ![System Metrics and Search Confirmation](screenshots/system_metrics_panel.png)
 
-> **System Metrics:**
-> The StatsPanel shows cache hit rate, cache misses, writes reduced, buffer size, and last flush time — updated every 5 seconds.
-
-> **Cache debug API output:**
-> ```bash
-> curl "http://localhost:8080/api/cache/debug?prefix=goo"
-> # {"prefix":"goo","node":"redis","status":"HIT","cacheKey":"typeahead:suggest:goo","ttlSeconds":234}
-> ```
