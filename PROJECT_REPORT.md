@@ -1,244 +1,412 @@
 # High-Level Design (HLD) Project Report: Typeahead Search Suggestion System
 
-This report presents the implementation details, design decisions, and performance characteristics of the distributed real-time typeahead suggestion system.
+This report covers the architecture, dataset loading, APIs, design trade-offs, and performance characteristics of the implemented search typeahead system.
 
 ---
 
 ## 1. Architecture Diagram & Explanation
 
 ### Architecture Diagram
-The system is built as a multi-tier, highly-available web application containing a React client, a load-balanced Spring Boot backend cluster, a distributed Redis caching layer (simulating a 3-node shard cluster using consistent hashing), and a PostgreSQL database.
+
+The system is a full-stack application with a React frontend, a Spring Boot backend, PostgreSQL as the source of truth, and Redis as the low-latency cache. For local development, Docker Compose starts PostgreSQL 16, Redis 7, and the backend. In production, the same backend can connect to Neon PostgreSQL and Upstash Redis through environment variables.
 
 ```mermaid
 graph TD
-    Client["React Frontend"] -->|"1. GET /api/suggest?q=xxx"| Backend["Spring Boot Backend App"]
-    Client -->|"2. POST /api/search {query}"| Backend
+    Client["React Frontend"] -->|"GET /api/suggest?q=prefix"| Suggest["SuggestController"]
+    Client -->|"POST /api/search"| Search["SearchController"]
+    Client -->|"GET /api/trending"| TrendApi["SuggestController / trending"]
+    Client -->|"GET /api/cache/debug"| Debug["CacheDebugController"]
 
-    subgraph Backend Services["Backend Services"]
-        Backend -->|"3. Route Query Prefix"| Ring["ConsistentHashRing"]
-        Backend -->|"4. Buffer Searches"| Batch["BatchWriteService"]
-        Backend -->|"5. Record Search Recency"| Trend["TrendingService"]
+    subgraph Backend["Spring Boot Backend"]
+        Suggest --> SuggestionService["SuggestionService"]
+        Search --> SearchService["SearchService"]
+        TrendApi --> TrendingService["TrendingService"]
+        Debug --> CacheService["DistributedCacheService"]
+
+        SuggestionService --> CacheService
+        SuggestionService --> TrendingService
+        SuggestionService --> Repository["SearchQueryRepository"]
+
+        SearchService --> Batch["BatchWriteService"]
+        SearchService --> CacheService
+        SearchService --> TrendingService
+
+        CacheService --> Ring["ConsistentHashRing"]
+        Batch --> Repository
     end
 
-    subgraph Distributed Caching Layer["Distributed Caching Layer"]
-        Ring -->|"Node 0"| Cache0["Redis: cache-node-0"]
-        Ring -->|"Node 1"| Cache1["Redis: cache-node-1"]
-        Ring -->|"Node 2"| Cache2["Redis: cache-node-2"]
+    subgraph Cache["Redis Cache Layer"]
+        Ring -->|"cache-node-0 namespace"| Redis0["Redis keys: cache-node-0:*"]
+        Ring -->|"cache-node-1 namespace"| Redis1["Redis keys: cache-node-1:*"]
+        Ring -->|"cache-node-2 namespace"| Redis2["Redis keys: cache-node-2:*"]
     end
 
-    subgraph Database Layer["Database Layer"]
-        Batch -->|"6. Flush Batches (Every 5s)"| DB[("PostgreSQL Database")]
-    end
-
-    Backend -->|"Read Suggestions on Cache Miss"| DB
+    Repository --> DB[("PostgreSQL search_queries")]
 ```
 
 ### Component Details
-1. **React Frontend:** A responsive search client built with React and Tailwind CSS. It features real-time search suggestions on keypress, search submission, trending query widgets, cache debug/routing visualization, and a system health/performance stats panel.
-2. **Spring Boot Backend:** Implements REST controllers (`SuggestController`, `SearchController`, `CacheDebugController`) and handles core business logic.
-3. **Consistent Hash Ring (`ConsistentHashRing.java`):** A custom hash ring implementation using MD5. It dynamically maps keys (e.g. `typeahead:suggest:app`) across a set of physical nodes (`cache-node-0`, `cache-node-1`, `cache-node-2`). Each node is assigned 150 virtual nodes to ensure uniform distribution of cache items.
-4. **Distributed Cache Service (`DistributedCacheService.java`):** Connects to the consistent hash ring to route search suggestions read/write/invalidation commands to the specific Redis instance assigned to that prefix.
-5. **Batch Write Service (`BatchWriteService.java`):** Prevents database write-bottlenecks. Search submissions are written to an in-memory concurrent buffer. A background thread flushes updates to PostgreSQL every 5 seconds in batches, performing read-modify-write optimization in a single database transaction.
-6. **Trending Service (`TrendingService.java`):** Combines historical search counts with recent activity using an exponential decay scoring model over a rolling 60-minute window.
+
+1. **React Frontend:** Provides the search input, debounced suggestion dropdown, keyboard navigation, search submission, trending searches, cache debug panel, and system metrics panel.
+2. **Spring Boot Backend:** Exposes REST APIs under `/api`, coordinates suggestion reads, search writes, cache routing, trending computation, and metrics.
+3. **PostgreSQL:** Stores durable query-count data in the `search_queries` table. Local development uses Docker PostgreSQL; production can use Neon PostgreSQL.
+4. **Redis Cache:** Stores suggestion results by prefix with TTL. Local development uses Docker Redis; production can use Upstash Redis.
+5. **Consistent Hash Ring:** Routes each prefix cache key to one of three logical cache nodes (`cache-node-0`, `cache-node-1`, `cache-node-2`) with 150 virtual nodes per logical node.
+6. **Suggestion Service:** Checks Redis first. On a cache miss, it asks PostgreSQL for a bounded top-N candidate set, merges recent matching searches, applies recency-aware scoring, returns 10 suggestions, and caches the result.
+7. **Batch Write Service:** Buffers search-count increments in memory and flushes aggregated updates every 10 seconds or when 100 unique queries are buffered.
+8. **Trending Service:** Tracks recent searches in an in-memory 60-minute window and applies exponential decay for recency-aware ranking.
+
+### Runtime Modes
+
+**Local development:**
+```bash
+docker compose up --build
+```
+
+This starts:
+- Backend: `http://localhost:8080`
+- PostgreSQL: `localhost:5432`, database `typeahead`, user `typeahead`, password `typeahead`
+- Redis: `localhost:6379`
+
+**Production/cloud mode:**
+```bash
+SPRING_DATASOURCE_URL=jdbc:postgresql://your-neon-host/your-db?sslmode=require
+SPRING_DATASOURCE_USERNAME=your-neon-user
+SPRING_DATASOURCE_PASSWORD=your-neon-password
+REDIS_URL=rediss://default:your-upstash-password@your-upstash-host:6379
+REDIS_PASSWORD=your-upstash-password
+REDIS_SSL_ENABLED=true
+```
+
+With these environment variables, the backend uses Neon PostgreSQL and Upstash Redis without code changes.
 
 ---
 
-## 2. Dataset & Loading Instructions
+## 2. Dataset Source and Loading Instructions
 
 ### Dataset Source
-The system uses the **AOL Query Log Dataset** containing ~491,000 unique query strings and their raw historical popularity count.
-* **File Location:** `/backend/src/main/resources/data/queries.csv`
-* **Format:** Comma-separated values without quotes, e.g.:
-  ```csv
-  google,32014
-  yahoo,24102
-  iphone,1501
-  ```
 
-### Data Loading Process
-On application startup, the system automatically checks if the database contains any records:
-1. `DatasetLoader` intercepts startup using `@PostConstruct`.
-2. It queries PostgreSQL to count the current rows (`searchQueryRepository.count()`). If rows exist, it skips initialization.
-3. If empty, it reads `queries.csv` line-by-line via a buffered input stream.
-4. The records are parsed, instantiated into JPA entities, and saved in database batches of 5,000 using Spring Data's `saveAll()`, wrapped in a single transaction for efficiency.
-5. High-volume loading (~491k rows) completes in under 10 seconds.
+The project uses an AOL query-log-derived CSV with approximately 491,000 query rows.
+
+* **File location:** `backend/src/main/resources/data/queries.csv`
+* **Format:** CSV with a header row:
+
+```csv
+query,count
+google,32396
+yahoo,13344
+ebay,12949
+```
+
+Each row stores a query string and its historical popularity count.
+
+### Loading Process
+
+Dataset loading is automatic on backend startup:
+
+1. `DatasetLoader` runs after Spring starts via `@PostConstruct`.
+2. It checks `searchQueryRepository.count()`.
+3. If the table already has rows, it skips loading to avoid duplicate imports.
+4. If the table is empty, it reads `queries.csv` from the classpath.
+5. It parses each row into a `SearchQuery` entity.
+6. It saves rows in batches of 5,000 using `saveAll()`.
+
+### Local Loading Instructions
+
+For a fresh local load:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+`docker compose down -v` removes the local PostgreSQL volume. The next backend startup sees an empty database and reloads the CSV automatically.
 
 ---
 
 ## 3. API Documentation
 
-### 1. Suggest API
-* **Endpoint:** `GET /api/suggest`
-* **Query Params:** `q` (search prefix)
-* **Response Status:** `200 OK`
-* **Description:** Retrieves matching suggestions for the prefix, sorted using the recency-aware score. Checks the appropriate cache node first (using the Consistent Hash Ring); if a miss occurs, queries the database, caches the results in Redis, and returns.
-* **Curl Request:**
-  ```bash
-  curl -s "http://localhost:8080/api/suggest?q=go"
-  ```
-* **Sample Response:**
-  ```json
-  {
-    "prefix": "go",
-    "suggestions": [
-      { "query": "go", "score": 309 },
-      { "query": "google", "score": 204 },
-      { "query": "government jobs", "score": 154 }
-    ],
-    "latencyMs": 8
-  }
-  ```
+### Suggest API
 
-### 2. Search Submit API
+* **Endpoint:** `GET /api/suggest?q=<prefix>`
+* **Purpose:** Return up to 10 prefix-matching suggestions.
+* **Behavior:** Cache-first. On miss, fetches a bounded DB-side candidate set ordered by historical count, merges recent matching searches, applies recency-aware scoring, caches the result, and returns it.
+
+```bash
+curl -s "http://localhost:8080/api/suggest?q=go"
+```
+
+```json
+{
+  "prefix": "go",
+  "suggestions": [
+    { "query": "google", "score": 32396 },
+    { "query": "google.com", "score": 8139 }
+  ],
+  "latencyMs": 8
+}
+```
+
+### Search Submit API
+
 * **Endpoint:** `POST /api/search`
-* **Content-Type:** `application/json`
-* **Request Body:** `{"query": "<search query>"}`
-* **Response Status:** `200 OK`
-* **Description:** Records a new search event, adds it to the batch writer queue, invalidates related prefixes across the Redis ring, and triggers a trending update.
-* **Curl Request:**
-  ```bash
-  curl -s -X POST -H "Content-Type: application/json" -d '{"query":"go"}' "http://localhost:8080/api/search"
-  ```
-* **Sample Response:**
-  ```json
-  {
-    "query": "go",
-    "message": "Searched",
-    "latencyMs": 4
-  }
-  ```
+* **Purpose:** Return a dummy searched response and record the submitted query.
+* **Behavior:** Adds the normalized query to the batch-write buffer, invalidates all cached prefixes for the query, and records a recent search event.
 
-### 3. Trending Searches API
+```bash
+curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"query":"google"}' \
+  "http://localhost:8080/api/search"
+```
+
+```json
+{
+  "message": "Searched",
+  "query": "google",
+  "latencyMs": 4
+}
+```
+
+### Trending Searches API
+
 * **Endpoint:** `GET /api/trending`
-* **Response Status:** `200 OK`
-* **Description:** Returns the top 10 trending search queries globally using the combined decay formula.
-* **Curl Request:**
-  ```bash
-  curl -s "http://localhost:8080/api/trending"
-  ```
-* **Sample Response:**
-  ```json
-  {
-    "trending": [
-      { "query": "go", "score": 309 },
-      { "query": "iphone", "score": 102 }
-    ]
-  }
-  ```
+* **Purpose:** Return the current top 10 trending searches.
+* **Behavior:** Combines recent search events with persisted historical counts.
 
-### 4. Cache Stats & Debug APIs
-* **Endpoint:** `GET /api/cache/stats`
-* **Description:** Returns total requests, hit count, miss count, and hit rate.
-* **Curl Request:**
-  ```bash
-  curl -s "http://localhost:8080/api/cache/stats"
-  ```
-* **Sample Response:**
-  ```json
-  {
-    "hitRate": "8.00%",
-    "totalRequests": 25,
-    "missCount": 23,
-    "hitCount": 2
-  }
-  ```
+```bash
+curl -s "http://localhost:8080/api/trending"
+```
+
+```json
+{
+  "trending": [
+    { "query": "google", "score": 32496 },
+    { "query": "iphone", "score": 1601 }
+  ]
+}
+```
+
+### Cache Debug API
 
 * **Endpoint:** `GET /api/cache/debug?prefix=<prefix>`
-* **Description:** Provides hash ring routing metadata for a given prefix.
-* **Curl Request:**
-  ```bash
-  curl -s "http://localhost:8080/api/cache/debug?prefix=google"
-  ```
-* **Sample Response:**
-  ```json
-  {
-    "prefix": "google",
-    "cacheKey": "cache-node-0:typeahead:suggest:google",
-    "node": "cache-node-0",
-    "isHit": true,
-    "ttl": 118,
-    "suggestions": [...],
-    "latencyMs": 2
-  }
-  ```
+* **Purpose:** Show which logical cache node owns a prefix and whether its routed Redis key exists.
 
-### 5. Performance Statistics API
+```bash
+curl -s "http://localhost:8080/api/cache/debug?prefix=google"
+```
+
+```json
+{
+  "prefix": "google",
+  "node": "cache-node-0",
+  "status": "HIT",
+  "cacheKey": "cache-node-0:typeahead:suggest:google",
+  "ttlSeconds": 118,
+  "latencyMs": 2
+}
+```
+
+### Cache Stats API
+
+* **Endpoint:** `GET /api/cache/stats`
+* **Purpose:** Report cache hit/miss counts and hit rate.
+
+```json
+{
+  "hitCount": 2,
+  "missCount": 23,
+  "totalRequests": 25,
+  "hitRate": "8.00%"
+}
+```
+
+### Batch Stats API
+
+* **Endpoint:** `GET /api/batch/stats`
+* **Purpose:** Show pending buffered writes and write-reduction counters.
+
+```json
+{
+  "bufferSize": 3,
+  "totalFlushed": 13,
+  "totalWritesReduced": 42,
+  "totalIndividualWrites": 55,
+  "lastFlushTime": "2026-06-22T02:29:28+05:30[Asia/Kolkata]"
+}
+```
+
+### Performance Stats API
+
 * **Endpoint:** `GET /api/perf/stats`
-* **Description:** Provides real-time query percentiles (P50, P95, P99) alongside DB Read/Write counts.
-* **Curl Request:**
-  ```bash
-  curl -s "http://localhost:8080/api/perf/stats"
-  ```
-* **Sample Response:**
-  ```json
-  {
-    "latencyPercentiles": {
-      "p50": 236,
-      "p95": 570,
-      "p99": 1503
-    },
-    "sampleCount": 25,
-    "dbReadCount": 23,
-    "dbWriteCount": 13
-  }
-  ```
+* **Purpose:** Report suggestion latency percentiles and database I/O counters.
+
+```json
+{
+  "latencyPercentiles": {
+    "p50": 236,
+    "p95": 570,
+    "p99": 1503
+  },
+  "sampleCount": 25,
+  "dbReadCount": 23,
+  "dbWriteCount": 13
+}
+```
+
+### Hash Ring Info API
+
+* **Endpoint:** `GET /api/ring/info`
+* **Purpose:** Show consistent-hash-ring configuration.
+
+```json
+{
+  "totalNodes": 3,
+  "virtualNodesPerNode": 150,
+  "totalRingPositions": 450,
+  "nodeNames": ["cache-node-0", "cache-node-1", "cache-node-2"]
+}
+```
 
 ---
 
-## 4. Design Choices & Trade-offs
+## 4. Design Choices and Trade-offs
 
-### 1. In-Memory Recency-Aware Decaying Window
-* **Choice:** We use a rolling in-memory `ConcurrentLinkedDeque<SearchEvent>` to keep track of searches within the last 60 minutes, calculating exponential decay on the fly.
-* **Trade-off:**
-  - *Freshness:* Highly dynamic and instant. Spikes in activity instantly boost suggestion and trending scores.
-  - *Latency:* Extremely fast, requiring $O(1)$ appends and memory iterations, keeping read times low.
-  - *Volatility:* If the JVM restarts, recent trending metrics are lost, and scoring falls back to the database baseline. Given the requirements, in-memory structures are optimal compared to configuring complex persistent streaming layers like Kafka/Flink.
+### 1. Local-First Setup With Cloud Overrides
 
-### 2. Immediate Cache Invalidation
-* **Choice:** On submitting a search, we invalidate all prefix keys of that search string (e.g. searching "google" invalidates `g`, `go`, `goo`, `googL`, `google`) in the Redis cache ring.
-* **Trade-off:**
-  - *Freshness:* High. Users immediately see updated rankings for their searched prefixes.
-  - *Latency:* Slightly degrades the next suggestions because they hit a cache miss and read from PostgreSQL. However, with consistent hashing distributing the misses and B-Tree indexing on PostgreSQL, miss latency stays within acceptable limits.
+**Choice:** The default configuration runs locally with Docker PostgreSQL and Docker Redis. Cloud services are injected through environment variables.
 
-### 3. Batch Writing Buffer
-* **Choice:** Rather than calling `UPDATE count = count + 1` on every search event directly in PostgreSQL, the system holds submissions in a concurrent map buffer and flushes them in batches every 5 seconds.
-* **Trade-off:**
-  - *Persistence Lag:* Persisted search counts in PostgreSQL lag by up to 5 seconds. However, the search recency is immediately tracked in-memory, so suggestions and trending reflect changes instantaneously.
-  - *Database Load:* Substantially reduces write operations and transaction overhead, preventing connection pool exhaustion and keeping DB CPU utilization minimal.
+**Why:** The assignment requires the system to be easy to run locally. A reviewer can start the backend dependencies without Neon or Upstash credentials.
 
-### 4. Consistent Hashing with Virtual Nodes
-* **Choice:** A 3-node Redis cluster is simulated with a custom consistent hash ring. Each physical node is duplicated into 150 virtual nodes on the ring.
-* **Trade-off:**
-  - *Data Distribution:* Distributes cache keys evenly, preventing hot spots on individual Redis cache nodes.
-  - *Resiliency:* If a cache node goes offline, only $1/N$ (33.3%) of cache keys are invalidated (rerouted to neighboring nodes), minimizing cascading cache stampedes to PostgreSQL.
-  - *Complexity:* Marginally increases lookup complexity (O(log V) where V = 450 virtual nodes), which is CPU-bound and executes in under 0.1 milliseconds.
+**Trade-off:** Local Docker is not highly available. Production should use managed or clustered services such as Neon and Upstash.
+
+### 2. PostgreSQL as the Source of Truth
+
+**Choice:** Query-count data is stored in PostgreSQL using a `search_queries` table with indexes on `query` and `count`.
+
+**Why:** PostgreSQL provides durable storage, uniqueness constraints, indexed reads, and simple local/prod portability.
+
+**Trade-off:** A trie or specialized search index could serve prefix lookups faster, but PostgreSQL is simpler and sufficient for a 491k-row assignment dataset when combined with caching and bounded top-N reads.
+
+### 3. DB-Side Top-N Suggestions
+
+**Choice:** On cache miss, the backend calls `findByQueryStartingWithIgnoreCaseOrderByCountDesc(prefix, Pageable)` with `typeahead.suggestions.candidate-limit: 100`.
+
+**Why:** Broad prefixes such as `a` or `g` can match thousands of rows. Fetching all matches and sorting in Java would increase memory use and hurt p95 latency. DB-side top-N keeps the read path bounded.
+
+**Recency protection:** A newly searched query may not be in the historical top 100. To avoid losing recency effects, the backend also asks `TrendingService` for recent queries matching the prefix and merges up to 50 into the candidate set before scoring.
+
+**Trade-off:** A low-count query that is neither in the recent window nor in the top candidate set will not be considered for that request. The candidate limit can be increased if recall is more important than latency.
+
+### 4. Redis Cache With Consistent Hashing
+
+**Choice:** Suggestion results are cached in Redis by normalized prefix. A custom consistent hash ring maps each prefix key to one of three logical cache-node namespaces.
+
+**Why:** Redis reduces repeated database reads, TTL handles expiration, and consistent hashing demonstrates how cache keys can be distributed across shards.
+
+**Trade-off:** In this assignment, the three cache nodes are logical namespaces inside one Redis instance. In production, each logical node would map to a separate Redis instance or shard.
+
+### 5. Cache Invalidation
+
+**Choice:** When a search is submitted, all prefixes of that query are invalidated. Searching `google` deletes cached keys for `g`, `go`, `goo`, `goog`, `googl`, and `google`.
+
+**Why:** Suggestions and trending-sensitive rankings become fresh on the next request for those prefixes.
+
+**Trade-off:** This lowers cache hit rate for popular prefixes after writes. A TTL-only strategy would improve hit rate but allow stale suggestions for longer.
+
+### 6. Recency-Aware Trending
+
+**Choice:** Recent searches are stored in a `ConcurrentLinkedDeque` for a 60-minute window. Scores use:
+
+```text
+score = allTimeCount + (sum(decayFactor ^ ageMinutes) * boostMultiplier)
+```
+
+Current defaults:
+- `windowMinutes = 60`
+- `decayFactor = 0.95`
+- `boostMultiplier = 100`
+
+**Why:** Historical counts keep globally popular queries stable, while recent events allow temporarily popular queries to rise.
+
+**Trade-off:** Recent events are in memory. If the JVM restarts, recent trending state is lost and rankings fall back to PostgreSQL counts.
+
+### 7. Batch Writes
+
+**Choice:** Search submissions are buffered in a `ConcurrentHashMap<String, AtomicLong>` and flushed every 10 seconds or when 100 unique queries accumulate.
+
+**Why:** Repeated searches for the same query are aggregated before database writes. For example, 1,000 searches for `iphone` can become one database update with `count += 1000`.
+
+**Trade-off:** Buffered writes can be lost if the application crashes before the next flush. A production system would use a durable queue or write-ahead log.
 
 ---
 
 ## 5. Performance Report
 
-A performance benchmark was conducted by generating search queries and fetching prefix suggestions. The following real-time statistics were captured directly from the system's performance endpoints:
+### What Is Measured
 
-### Performance Stats
-* **Total Requests Tracked:** 25
-* **DB Read Operations:** 23 (recorded on cache misses)
-* **DB Write Operations:** 13 (flushes performed by the batch writer)
-* **Write Reduction:** Individual search actions were aggregated into bulk database writes, preserving connection health.
+The backend exposes live counters and latency percentiles:
 
-### Latency Percentiles (Milliseconds)
+- `/api/perf/stats`: p50, p95, p99 suggestion latency, DB read count, DB write count
+- `/api/cache/stats`: cache hit/miss count and hit rate
+- `/api/batch/stats`: pending buffer size and write-reduction counters
+- `/api/cache/debug`: logical cache-node routing for a prefix
+
+### Reported Benchmark Snapshot
+
+A small benchmark was run by issuing suggestion requests and search submissions, then reading the system metrics endpoints.
+
+| Metric | Observed Value | Source |
+|--------|----------------|--------|
+| Total suggestion requests tracked | 25 | `/api/perf/stats.sampleCount` |
+| DB reads | 23 | `/api/perf/stats.dbReadCount` |
+| DB writes | 13 | `/api/perf/stats.dbWriteCount` |
+| Initial cache hit rate | 8.00% | `/api/cache/stats.hitRate` |
+| Cache hit latency | 2-10 ms | `GET /api/suggest` response `latencyMs` |
+| Cache miss latency | 50-600 ms | `GET /api/suggest` response `latencyMs` |
+
+### Latency Percentiles
+
 | Percentile | Measured Latency | Explanation |
 |------------|------------------|-------------|
-| **P50** | `236 ms` | Median latency. Represents average query execution, combining quick cache hits with occasional cold starts. |
-| **P95** | `570 ms` | Core high-load latency. Represents cache misses that require a database B-Tree index scan. |
-| **P99** | `1503 ms` | Maximum tail latency. Represents the first-time warm-up phase of the JVM connection pool. |
+| P50 | 236 ms | Median suggestion latency during the benchmark. |
+| P95 | 570 ms | Tail latency for cache misses and cold database reads. |
+| P99 | 1503 ms | Warm-up / connection-pool tail latency. |
 
-### Caching Efficiency
-* **Initial Cache Hit Rate:** `8.00%` (warmup phase)
-* **Cache Read Speed (HIT):** `2–10 ms`
-* **Cache Miss Speed (MISS):** `50–600 ms` (Neon Postgres remote connection latency)
+### Effect of DB-Side Top-N
 
-### Cache Routing Distribution
-The consistent hash ring registered **450 total ring positions** (3 nodes $\times$ 150 virtual nodes). Key lookups resulted in optimal, uniform distribution among:
-1. `cache-node-0`
-2. `cache-node-1`
-3. `cache-node-2`
+The previous broad prefix strategy fetched every row matching a prefix and sorted in application memory. The current implementation bounds the miss path:
+
+```text
+Cache miss
+  → PostgreSQL top 100 by prefix and historical count
+  → merge up to 50 recent matching searches
+  → compute recency-aware score
+  → return top 10
+```
+
+This reduces memory pressure and makes cache-miss latency more predictable for broad prefixes such as `a`, `g`, and `go`.
+
+### Batch Write Reduction
+
+The batch writer tracks:
+
+```text
+totalWritesReduced = totalIndividualWrites - totalFlushed
+```
+
+If the same query appears many times before a flush, only one database write is needed for that query. This reduces database write pressure compared with synchronously updating PostgreSQL on every search submission.
+
+### Cache Routing Evidence
+
+The hash ring contains:
+
+```json
+{
+  "totalNodes": 3,
+  "virtualNodesPerNode": 150,
+  "totalRingPositions": 450,
+  "nodeNames": ["cache-node-0", "cache-node-1", "cache-node-2"]
+}
+```
+
+The `/api/cache/debug?prefix=<prefix>` endpoint shows the owning logical node, routed Redis key, hit/miss status, TTL, and lookup latency for any prefix.
