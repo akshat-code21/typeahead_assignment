@@ -1,19 +1,51 @@
 services:
+  postgres:
+    image: postgres:16
+    container_name: typeahead_postgres
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_DB: typeahead
+      POSTGRES_USER: typeahead
+      POSTGRES_PASSWORD: typeahead
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U typeahead -d typeahead"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7
     container_name: typeahead_redis
     ports:
       - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     container_name: typeahead_backend
     ports:
       - 8080:8080
     depends_on:
-      - redis
-    env_file:
-      - ./backend/.env
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_URL=redis://redis:6379
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://postgres:5432/typeahead}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-typeahead}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-typeahead}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_SSL_ENABLED: ${REDIS_SSL_ENABLED:-false}
+
+volumes:
+  postgres_data:

@@ -8,8 +8,8 @@ A full-stack search typeahead system with Redis caching, batch writes, and trend
 |-------|-----------|
 | Backend | Spring Boot 4.1, Java 21, Maven |
 | Frontend | React 19, TypeScript, Vite, shadcn/ui, TailwindCSS |
-| Database | PostgreSQL (Neon) |
-| Cache | Redis 7+ | 
+| Database | PostgreSQL locally, Neon PostgreSQL in production |
+| Cache | Redis 7+ locally, Upstash Redis in production |
 | Data Fetching | Axios, TanStack Query |
 | Dataset | AOL Query Logs (491K queries) |
 
@@ -17,18 +17,45 @@ A full-stack search typeahead system with Redis caching, batch writes, and trend
 
 ## Quick Start
 
-### Option A: Run Backend + Redis via Docker Compose (Easiest)
+### Option A: Run Backend + PostgreSQL + Redis via Docker Compose (Easiest)
 
-If you have Docker installed, you can start the backend and a local Redis container. First, define the database environment variables in your shell (or create a `.env` file in the project root):
+If you have Docker installed, this starts a fully local backend stack:
 
 ```bash
-export SPRING_DATASOURCE_URL="jdbc:postgresql://your-neon-db-url"
-export SPRING_DATASOURCE_USERNAME="your-db-username"
-export SPRING_DATASOURCE_PASSWORD="your-db-password"
-
 docker compose up --build
 ```
-The backend will start at `http://localhost:8080` and connect to the database and local Redis container automatically.
+
+The backend starts at `http://localhost:8080` and connects to:
+
+| Service | Local URL / Port | Credentials |
+|---------|------------------|-------------|
+| PostgreSQL | `localhost:5432` | database `typeahead`, user `typeahead`, password `typeahead` |
+| Redis | `localhost:6379` | no password |
+
+The first backend startup loads `backend/src/main/resources/data/queries.csv` into the local PostgreSQL volume. Later restarts reuse the same Docker volume and skip loading if rows already exist.
+
+To reset the local database and reload the dataset from scratch:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+### Production / Cloud Overrides
+
+For production, keep the same application image and provide cloud environment variables. These override the local defaults:
+
+```bash
+export SPRING_DATASOURCE_URL="jdbc:postgresql://your-neon-host/your-db?sslmode=require"
+export SPRING_DATASOURCE_USERNAME="your-neon-user"
+export SPRING_DATASOURCE_PASSWORD="your-neon-password"
+
+export REDIS_URL="rediss://default:your-upstash-password@your-upstash-host:6379"
+export REDIS_PASSWORD="your-upstash-password"
+export REDIS_SSL_ENABLED=true
+```
+
+With those variables set, the backend connects to Neon PostgreSQL and Upstash Redis instead of the local defaults.
 
 ---
 
@@ -41,21 +68,41 @@ redis-server
 # Runs on localhost:6379 by default
 ```
 
-#### 2. Start Backend
+#### 2. Start PostgreSQL
+Run PostgreSQL locally and create a database/user matching the backend defaults:
+
+```bash
+createdb typeahead
+createuser typeahead
+psql -d typeahead -c "ALTER USER typeahead WITH PASSWORD 'typeahead';"
+psql -d typeahead -c "GRANT ALL PRIVILEGES ON DATABASE typeahead TO typeahead;"
+```
+
+Or start just the local Docker dependencies:
+
+```bash
+docker compose up postgres redis
+```
+
+#### 3. Start Backend
 ```bash
 cd backend
-# Export database environment variables
-export SPRING_DATASOURCE_URL="jdbc:postgresql://your-neon-db-url"
-export SPRING_DATASOURCE_USERNAME="your-db-username"
-export SPRING_DATASOURCE_PASSWORD="your-db-password"
-
 ./mvnw spring-boot:run
 # Backend starts at http://localhost:8080
 ```
 
+By default, the backend uses:
+
+```text
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/typeahead
+SPRING_DATASOURCE_USERNAME=typeahead
+SPRING_DATASOURCE_PASSWORD=typeahead
+REDIS_URL=redis://localhost:6379
+```
+
 ---
 
-### 3. Start Frontend (Runs on Host)
+### 4. Start Frontend (Runs on Host)
 
 Regardless of how you started the backend, run the React frontend from the `frontend/` directory:
 
@@ -406,4 +453,3 @@ assignment/
 > The StatsPanel shows 8 metric cards — cache hit rate, cache misses, P95 latency (with p50/p99), DB reads, DB writes, writes reduced, buffer size, and last flush time (IST) — updated every 5 seconds. A confirmation banner also displays when a search is successfully submitted.
 >
 > ![System Metrics and Search Confirmation](screenshots/system_metrics_panel.png)
-

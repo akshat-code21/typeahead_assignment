@@ -5,9 +5,9 @@ spring:
   application:
     name: typeahead
   datasource:
-    url: ${SPRING_DATASOURCE_URL}
-    username: ${SPRING_DATASOURCE_USERNAME}
-    password: ${SPRING_DATASOURCE_PASSWORD}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/typeahead}
+    username: ${SPRING_DATASOURCE_USERNAME:typeahead}
+    password: ${SPRING_DATASOURCE_PASSWORD:typeahead}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
@@ -18,7 +18,7 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
   data:
     redis:
-      url: ${REDIS_URL:}
+      url: ${REDIS_URL:redis://localhost:6379}
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
