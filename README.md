@@ -253,32 +253,6 @@ After running the app and performing ~50 searches:
 | Cache hit rate (after warmup) | `GET /api/cache/stats` → `hitRate` | 30–60% |
 | Write reduction | `GET /api/batch/stats` → `totalWritesReduced` | varies |
 
-### p95 Latency Measurement
-
-Run this script after the backend is warm:
-
-```bash
-echo "latency_ms" > latency.csv
-for i in $(seq 1 100); do
-  prefix=$(echo "abcdefghij" | fold -w1 | shuf | head -c 3)
-  start=$(date +%s%3N)
-  curl -s "http://localhost:8080/api/suggest?q=$prefix" > /dev/null
-  end=$(date +%s%3N)
-  echo "$((end - start))" >> latency.csv
-done
-
-sort -n latency.csv | tail -n +2 | awk '
-  { a[NR] = $1; sum += $1 }
-  END {
-    print "Requests: " NR;
-    print "Avg:      " sum/NR " ms";
-    print "p50:      " a[int(NR*0.50)] " ms";
-    print "p95:      " a[int(NR*0.95)] " ms";
-    print "p99:      " a[int(NR*0.99)] " ms";
-  }
-'
-```
-
 ### Cache Debug
 
 ```bash
