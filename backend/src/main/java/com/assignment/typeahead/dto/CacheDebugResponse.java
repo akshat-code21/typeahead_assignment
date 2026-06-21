@@ -7,6 +7,7 @@ public class CacheDebugResponse {
     private String status;
     private String cacheKey;
     private Long ttlSeconds;
+    private Long latencyMs;
 
     public CacheDebugResponse(String prefix, String node, String status, String cacheKey, Long ttlSeconds) {
         this.prefix = prefix;
@@ -54,5 +55,13 @@ public class CacheDebugResponse {
 
     public void setTtlSeconds(Long ttlSeconds) {
         this.ttlSeconds = ttlSeconds;
+    }
+
+    public Long getLatencyMs() {
+        return latencyMs;
+    }
+
+    public void setLatencyMs(Long latencyMs) {
+        this.latencyMs = latencyMs;
     }
 }

@@ -12,6 +12,7 @@ export interface SuggestResponse {
 export interface SearchResponse {
   message: string;
   query: string;
+  latencyMs?: number;
 }
 
 export interface TrendingResponse {
@@ -24,6 +25,7 @@ export interface CacheDebugResponse {
   status: string;
   cacheKey: string;
   ttlSeconds: number | null;
+  latencyMs?: number;
 }
 
 export interface BatchStatsResponse {

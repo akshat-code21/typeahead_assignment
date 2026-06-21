@@ -10,6 +10,7 @@ export function App() {
   const [searchResult, setSearchResult] = useState<{
     message: string;
     query: string;
+    latencyMs?: number;
   } | null>(null);
 
   const [activePrefix, setActivePrefix] = useState("");
@@ -32,8 +33,8 @@ export function App() {
       {/* Search area */}
       <div className="max-w-2xl mx-auto px-4 space-y-4">
         <SearchBar
-          onSearchResult={(message, query) =>
-            setSearchResult({ message, query })
+          onSearchResult={(message, query, latencyMs) =>
+            setSearchResult({ message, query, latencyMs })
           }
           onPrefixChange={setActivePrefix}
         />
@@ -42,6 +43,7 @@ export function App() {
           <SearchResult
             message={searchResult.message}
             query={searchResult.query}
+            latencyMs={searchResult.latencyMs}
           />
         )}
 

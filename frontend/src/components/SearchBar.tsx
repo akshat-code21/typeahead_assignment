@@ -7,7 +7,7 @@ import { useDebounce } from "@/hooks/useDebounce";
 import type { Suggestion } from "@/types";
 
 interface SearchBarProps {
-  onSearchResult?: (message: string, query: string) => void;
+  onSearchResult?: (message: string, query: string, latencyMs?: number) => void;
   onPrefixChange?: (prefix: string) => void;
 }
 
@@ -33,7 +33,7 @@ export function SearchBar({ onSearchResult, onPrefixChange }: SearchBarProps) {
   const searchMutation = useMutation({
     mutationFn: submitSearch,
     onSuccess: (data) => {
-      onSearchResult?.(data.message, data.query);
+      onSearchResult?.(data.message, data.query, data.latencyMs);
       queryClient.invalidateQueries({ queryKey: ["trending"] });
     },
   });

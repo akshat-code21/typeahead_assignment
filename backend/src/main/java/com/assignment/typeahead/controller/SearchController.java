@@ -15,12 +15,15 @@ public class SearchController {
     private SearchService searchService;
 
     @PostMapping("/search")
-    public ResponseEntity<Map<String, String>> search(@RequestBody Map<String, String> body) {
+    public ResponseEntity<Map<String, Object>> search(@RequestBody Map<String, String> body) {
+        long start = System.currentTimeMillis();
         String query = body.getOrDefault("query", "");
         String message = searchService.submitSearch(query);
+        long latencyMs = System.currentTimeMillis() - start;
         return ResponseEntity.ok(Map.of(
                 "message", message,
-                "query", query
+                "query", query,
+                "latencyMs", latencyMs
         ));
     }
 }

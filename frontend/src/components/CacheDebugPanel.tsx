@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Database, CheckCircle2, XCircle, Timer } from "lucide-react";
+import { Database, CheckCircle2, XCircle, Timer, Clock } from "lucide-react";
 import { fetchCacheDebug } from "@/api/typeaheadApi";
 
 interface CacheDebugPanelProps {
@@ -51,6 +51,13 @@ export function CacheDebugPanel({ prefix }: CacheDebugPanelProps) {
         <div className="flex items-center gap-1">
           <Timer className="h-3 w-3" />
           <span>TTL: {data.ttlSeconds}s</span>
+        </div>
+      )}
+
+      {data.latencyMs !== null && data.latencyMs !== undefined && (
+        <div className="flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          <span>latency: {data.latencyMs}ms</span>
         </div>
       )}
 

@@ -24,7 +24,10 @@ public class CacheDebugController {
 
     @GetMapping("/cache/debug")
     public ResponseEntity<CacheDebugResponse> cacheDebug(@RequestParam("prefix") String prefix) {
+        long start = System.currentTimeMillis();
         CacheDebugResponse info = cacheService.getRoutingInfo(prefix);
+        long latencyMs = System.currentTimeMillis() - start;
+        info.setLatencyMs(latencyMs);
         return ResponseEntity.ok(info);
     }
 
