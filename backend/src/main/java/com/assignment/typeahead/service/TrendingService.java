@@ -36,6 +36,22 @@ public class TrendingService {
         evictOldEvents();
     }
 
+    public Set<String> getRecentQueriesStartingWith(String prefix, int limit) {
+        evictOldEvents();
+        String normalizedPrefix = prefix.trim().toLowerCase();
+        Set<String> matches = new LinkedHashSet<>();
+
+        Iterator<SearchEvent> iterator = recentEvents.descendingIterator();
+        while (iterator.hasNext() && matches.size() < limit) {
+            SearchEvent event = iterator.next();
+            if (event.query.startsWith(normalizedPrefix)) {
+                matches.add(event.query);
+            }
+        }
+
+        return matches;
+    }
+
     public List<SuggestionResponse> getTrending() {
         evictOldEvents();
 

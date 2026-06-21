@@ -27,6 +27,8 @@ spring:
       timeout: ${REDIS_TIMEOUT:10000ms}
 
 typeahead:
+  suggestions:
+    candidate-limit: 100
   cache:
     ttl-seconds: 300
     key-prefix: "typeahead:suggest:"

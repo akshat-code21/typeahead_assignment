@@ -187,7 +187,8 @@ SearchBar → debounce 300ms → GET /api/suggest
       → ConsistentHashRing.getNode(baseKey)  → determines owning node
       → RedisTemplate.opsForValue().get("cache-node-X:typeahead:suggest:<prefix>")
         ├─ HIT:  return cached List<SuggestionResponse>
-        └─ MISS: DB query (dbReadCount++) → sort by count → limit 10
+        └─ MISS: DB top-N query (dbReadCount++) → merge recent prefix searches
+                 → apply recency-aware score → limit 10
                  → cache.put(prefix, results, TTL=300s)
                  → return results
   → PerformanceMetricsService.recordLatency(latencyMs)
@@ -318,7 +319,7 @@ $$score = allTimeCount + \left(\sum decayFactor^{ageMinutes}\right) \times boost
 
 **Why:** Reliable, supports indexes for prefix queries (`LIKE 'prefix%'`), hosted on Neon for easy remote access.
 
-**Trade-off:** For prefix queries on 491K rows, a trie data structure would be faster (O(prefix length) vs O(log N + matches)). But PostgreSQL with a B-tree index on `query` column is fast enough at this scale and much simpler to maintain.
+**Trade-off:** For prefix queries on 491K rows, a trie data structure would be faster (O(prefix length) vs O(log N + matches)). The implementation keeps PostgreSQL simple but avoids fetching every match by asking the database for a bounded candidate set ordered by historical count (`typeahead.suggestions.candidate-limit`, default 100). The backend then merges recent matching searches from the in-memory trending window and applies the final recency-aware score before returning 10 suggestions.
 
 ---
 
@@ -401,7 +402,7 @@ assignment/
 │       ├── model/SearchQuery.java               # JPA entity (query, count, updated_at)
 │       ├── repository/SearchQueryRepository.java # JPA repository (prefix query, top-10)
 │       ├── service/
-│       │   ├── SuggestionService.java           # Cache-first → DB fallback → sort → limit 10
+│       │   ├── SuggestionService.java           # Cache-first → DB top-N fallback → recency score → limit 10
 │       │   ├── SearchService.java               # Buffer + invalidate + record trending
 │       │   ├── DistributedCacheService.java     # Redis get/put/invalidate via hash ring
 │       │   ├── ConsistentHashRing.java          # MD5 hash ring (3 nodes × 150 virtual)
