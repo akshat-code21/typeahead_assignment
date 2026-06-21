@@ -165,12 +165,13 @@ bun dev       # or npm run dev
 │         │                │                                        │
 │  ┌──────▼──────────┐     │                                        │
 │  │  Redis Server   │     │                                        │
-│  │  (localhost:    │     │                                        │
-│  │    6379)        │     │                                        │
+│  │  local Redis or │     │                                        │
+│  │  Upstash Redis  │     │                                        │
 │  └─────────────────┘     │                                        │
 │                          │                                        │
 │              ┌───────────▼──────────┐                             │
-│              │    PostgreSQL (Neon) │                             │
+│              │   PostgreSQL         │                             │
+│              │ local or Neon cloud  │                             │
 │              │   search_queries     │                             │
 │              │   (query, count, ts) │                             │
 │              └──────────────────────┘                             │
@@ -210,6 +211,19 @@ SearchBar → POST /api/search
   → PerformanceMetricsService.incrementDbWrites(flushedCount)
 ```
 
+**Local vs Production Infrastructure:**
+```
+Local development:
+  docker compose up --build
+    → starts backend + PostgreSQL 16 + Redis 7
+    → backend uses jdbc:postgresql://postgres:5432/typeahead and redis://redis:6379
+
+Production:
+  set SPRING_DATASOURCE_* and REDIS_* environment variables
+    → backend uses Neon PostgreSQL and Upstash Redis
+    → application code stays unchanged
+```
+
 ---
 
 ## API Documentation
@@ -228,6 +242,18 @@ SearchBar → POST /api/search
 ---
 
 ## Design Choices and Trade-offs
+
+### 0. Local-First Runtime With Cloud Overrides
+
+**Design:** The application defaults to local infrastructure so the project is reproducible without cloud credentials. `docker-compose.yml` starts PostgreSQL 16, Redis 7, and the Spring Boot backend. `application.yaml` also has localhost defaults for developers running services manually.
+
+**Production mode:** Neon PostgreSQL and Upstash Redis are still supported through environment variables:
+- `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`
+- `REDIS_URL`, `REDIS_PASSWORD`, `REDIS_SSL_ENABLED`
+
+**Why:** This satisfies the assignment requirement that the system is easy to run locally while keeping the production deployment path cloud-ready.
+
+**Trade-off:** Local Docker uses a single PostgreSQL and Redis instance. Production can swap those endpoints for managed cloud services without code changes.
 
 ### 1. Redis as Distributed Cache with Consistent Hashing
 
@@ -298,7 +324,7 @@ $$score = allTimeCount + \left(\sum decayFactor^{ageMinutes}\right) \times boost
 * **Recency Boost:** When a query is searched, it enters the sliding window. Its score receives a `boostMultiplier` (100) multiplied by a decaying weight based on its age.
   - A search **1 minute ago** adds: $0.95^{1} \times 100 = 95.0$ to the score.
   - A search **30 minutes ago** adds: $0.95^{30} \times 100 \approx 21.46$ to the score.
-* **Re-ranking Suggestions & Trending:** Both `/api/suggest?q=...` and `/api/trending` retrieve the current raw count from the database and combine it with the decayed boost score to sort suggestions.
+* **Re-ranking Suggestions & Trending:** `/api/suggest?q=...` retrieves a bounded DB-side top-N candidate set, merges recent matching searches, and combines historical count with the decayed boost score. `/api/trending` combines recent activity with persisted historical counts for global trending results.
 
 #### 3. How the system avoids permanently over-ranking queries
 * **Sliding Window Eviction:** During every new search event or get request, events older than `windowMinutes` (60 minutes) are evicted from the deque using `evictOldEvents()`.
@@ -307,8 +333,8 @@ $$score = allTimeCount + \left(\sum decayFactor^{ageMinutes}\right) \times boost
 
 #### 4. How the cache is updated/invalidated when rankings change
 * **Cache Invalidation:** When a search is submitted, `DistributedCacheService.invalidateAllPrefixes(query)` is triggered. It computes all prefixes of the query and invalidates their cache entries across the Redis cluster.
-* **Freshness Propagation:** The next request for `/api/suggest?q=<prefix>` experiences a cache miss, queries the database, applies the latest recency boost, and populates the Redis cache with the updated ranking.
-* **Separation of Concerns:** The `/api/trending` endpoint does not cache results because it reads directly from JVM memory and Neon DB metadata. This ensures that the trending widget displays real-time popularity shifts without waiting for suggestion TTLs to expire.
+* **Freshness Propagation:** The next request for `/api/suggest?q=<prefix>` experiences a cache miss, queries the bounded DB-side candidate set, merges recent prefix matches, applies the latest recency boost, and populates the Redis cache with the updated ranking.
+* **Separation of Concerns:** The `/api/trending` endpoint does not cache results because it reads directly from JVM memory and PostgreSQL metadata. This ensures that the trending widget displays real-time popularity shifts without waiting for suggestion TTLs to expire.
 
 #### 5. Trade-offs: Freshness vs. Latency vs. Complexity
 * **Freshness vs. Latency:** Cache invalidation on submission guarantees absolute freshness of the suggestions. However, it increases suggestion latency on the next keypress because of cache misses (50–600ms DB read vs. <10ms cache hit). 
@@ -317,9 +343,30 @@ $$score = allTimeCount + \left(\sum decayFactor^{ageMinutes}\right) \times boost
 
 ### 6. Database Choice (PostgreSQL)
 
-**Why:** Reliable, supports indexes for prefix queries (`LIKE 'prefix%'`), hosted on Neon for easy remote access.
+**Why:** Reliable, supports indexed prefix queries, works locally through Docker, and can be hosted on Neon for production.
 
 **Trade-off:** For prefix queries on 491K rows, a trie data structure would be faster (O(prefix length) vs O(log N + matches)). The implementation keeps PostgreSQL simple but avoids fetching every match by asking the database for a bounded candidate set ordered by historical count (`typeahead.suggestions.candidate-limit`, default 100). The backend then merges recent matching searches from the in-memory trending window and applies the final recency-aware score before returning 10 suggestions.
+
+### 7. DB-Side Top-N Suggestion Query
+
+**Design:** On a cache miss, `SuggestionService` calls `SearchQueryRepository.findByQueryStartingWithIgnoreCaseOrderByCountDesc(prefix, Pageable)` with a configurable candidate limit. The database returns only the highest-count prefix matches instead of returning every row that starts with the prefix.
+
+**Default candidate limit:** `typeahead.suggestions.candidate-limit: 100`
+
+**Why:** Broad prefixes such as `a`, `g`, or `go` can match thousands of rows in the AOL dataset. Fetching all matches and sorting them in Java increases memory use and hurts tail latency. DB-side top-N keeps the miss path bounded.
+
+**Recency handling:** Because pure historical top-N could miss a newly searched query, the service also asks `TrendingService` for recent queries that start with the same prefix and merges up to 50 of them into the candidate set before scoring.
+
+**Final ranking flow:**
+```
+PostgreSQL top 100 by historical count
+  + recent in-memory prefix matches
+  → recency-aware score
+  → sort
+  → return top 10
+```
+
+**Trade-off:** A very low historical-count query that is not in the recent window and not in the top candidate set will not be considered for that request. This is acceptable for the assignment because suggestions prioritize popularity and recent searches, and the candidate limit can be increased if needed.
 
 ---
 
@@ -400,7 +447,7 @@ assignment/
 │       │   ├── AppConfig.java                   # CORS, @EnableScheduling
 │       │   └── RedisConfig.java                 # RedisTemplate bean (String key, JSON value)
 │       ├── model/SearchQuery.java               # JPA entity (query, count, updated_at)
-│       ├── repository/SearchQueryRepository.java # JPA repository (prefix query, top-10)
+│       ├── repository/SearchQueryRepository.java # JPA repository (bounded prefix top-N)
 │       ├── service/
 │       │   ├── SuggestionService.java           # Cache-first → DB top-N fallback → recency score → limit 10
 │       │   ├── SearchService.java               # Buffer + invalidate + record trending
