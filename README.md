@@ -19,12 +19,16 @@ A full-stack search typeahead system with Redis caching, batch writes, and trend
 
 ### Option A: Run Backend + Redis via Docker Compose (Easiest)
 
-If you have Docker installed, you can start the backend and a local Redis container with one command from the project root:
+If you have Docker installed, you can start the backend and a local Redis container. First, define the database environment variables in your shell (or create a `.env` file in the project root):
 
 ```bash
+export SPRING_DATASOURCE_URL="jdbc:postgresql://your-neon-db-url"
+export SPRING_DATASOURCE_USERNAME="your-db-username"
+export SPRING_DATASOURCE_PASSWORD="your-db-password"
+
 docker compose up --build
 ```
-The backend will start at `http://localhost:8080` and connect to the local Redis container automatically.
+The backend will start at `http://localhost:8080` and connect to the database and local Redis container automatically.
 
 ---
 
@@ -40,7 +44,11 @@ redis-server
 #### 2. Start Backend
 ```bash
 cd backend
-# Database connects to Neon PostgreSQL by default (configured in src/main/resources/application.yaml)
+# Export database environment variables
+export SPRING_DATASOURCE_URL="jdbc:postgresql://your-neon-db-url"
+export SPRING_DATASOURCE_USERNAME="your-db-username"
+export SPRING_DATASOURCE_PASSWORD="your-db-password"
+
 ./mvnw spring-boot:run
 # Backend starts at http://localhost:8080
 ```

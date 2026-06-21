@@ -5,9 +5,9 @@ spring:
   application:
     name: typeahead
   datasource:
-    url: jdbc:postgresql://ep-restless-waterfall-aooqlh64-pooler.c-2.ap-southeast-1.aws.neon.tech/neondb?user=neondb_owner&password=npg_UzD4BKFnw5qR&sslmode=require&channelBinding=require
-    username: neondb_owner
-    password: npg_UzD4BKFnw5qR
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
